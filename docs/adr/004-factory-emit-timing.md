@@ -36,7 +36,7 @@ Sequence:
 
 ## Consequences
 
-- The library is emitted before `session_start` — `ModelRegistry` is NOT available yet at emit time
-- Library methods that need ModelRegistry must defer (lazy capture pattern — see ADR-007)
-- Extensions can grab the reference in their factory but cannot call executor methods until `session_start`
+- The library is emitted before `session_start` — `ModelRegistry` is NOT available at emit time
+- Library methods require `ModelRegistry` as a parameter (see ADR-007) — callers pass it from their own event context
+- Extensions grab the library reference in factory; use it freely in `session_start` or later by passing `ctx.modelRegistry`
 - If pi-baml is not in the packages list, the event never fires — consumers handle null

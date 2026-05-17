@@ -30,7 +30,7 @@ Pi extension that bridges [BAML](https://github.com/BoundaryML/baml) (a structur
 pi-baml/
 ├── src/
 │   ├── index.ts              ← Extension factory (entry point)
-│   ├── eventbus.ts           ← createPiBamlLibrary + PiBamlLibraryInternal
+│   ├── eventbus.ts           ← createPiBamlLibrary (stateless, no session_start)
 │   ├── lib/
 │   │   ├── types.ts          ← All shared types (zero logic)
 │   │   ├── config.ts         ← parseBamlSettings()
@@ -115,11 +115,8 @@ const parsed = result.parsed(false);
 export default function(pi: ExtensionAPI) {
   pi.registerTool({ name, description, parameters, execute });
   pi.events.emit("pi-baml:ready", libraryObject);
-  pi.on("session_start", async (event, ctx) => {
-    // ctx.modelRegistry available here
-    const model = ctx.modelRegistry.find("github-copilot", "claude-haiku-4.5");
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-  });
+  // No session_start handler needed — library is stateless.
+  // Consumers pass ctx.modelRegistry on each library method call.
 }
 ```
 
@@ -177,3 +174,4 @@ npm run test:integration  # real BAML compilation
 8. **Copilot auth is provider-aware** — `anthropic` needs Bearer in headers; `openai-generic` uses `api_key` natively (see ADR-013).
 9. **Enriched tool output** — `baml_run`/`baml_exec` return `{ result, model, tier }` envelope. The render layer unwraps this for display and shows model/tier in the footer.
 10. **Discovery runs at factory time** — `discoverBamlGroups(cwd, functionsDirs)` scans all discovery paths and populates the registry immediately.
+11. **ModelRegistry is explicit** — library methods require `modelRegistry` as a parameter. No internal state, no session_start handler, no lifecycle coupling (see ADR-007).

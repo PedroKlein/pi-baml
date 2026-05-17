@@ -1,8 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { createPiBamlLibrary } from "../../src/eventbus.js";
 import { FunctionsRegistry } from "../../src/lib/registry.js";
-import type { BamlSettings } from "../../src/lib/types.js";
-import type { ModelRegistry } from "../../src/lib/bridge.js";
+import type { BamlSettings, ModelRegistry } from "../../src/lib/types.js";
 
 // Mock BAML runtime
 vi.mock("@boundaryml/baml", () => ({
@@ -59,22 +58,30 @@ describe("createPiBamlLibrary", () => {
 
   it("throws on method call when unavailable", async () => {
     const lib = createPiBamlLibrary({ available: false, loadError: "test", settings });
-    await expect(lib.execBaml("code", "fn", {})).rejects.toThrow("unavailable");
+    const mockRegistry = createMockModelRegistry();
+    await expect(lib.execBaml("code", "fn", {}, mockRegistry)).rejects.toThrow("unavailable");
   });
 
-  it("throws before session_start (no modelRegistry)", async () => {
+  it("execBaml works with modelRegistry passed directly", async () => {
     const lib = createPiBamlLibrary({ available: true, settings });
-    await expect(lib.execBaml("code", "fn", {})).rejects.toThrow("not initialized");
-  });
+    const mockRegistry = createMockModelRegistry();
 
-  it("works after setModelRegistry is called", async () => {
-    const lib = createPiBamlLibrary({ available: true, settings });
-    lib.setModelRegistry(createMockModelRegistry());
-
-    // execBaml should attempt to compile (and may fail on BAML compilation,
-    // but it should NOT throw "not initialized")
+    // execBaml should attempt to compile (may fail on BAML compilation,
+    // but should NOT throw "not initialized" or deadlock)
     try {
-      await lib.execBaml("invalid baml", "fn", {});
+      await lib.execBaml("invalid baml", "fn", {}, mockRegistry);
+    } catch (err) {
+      expect((err as Error).message).not.toContain("not initialized");
+    }
+  });
+
+  it("createExecutor works with modelRegistry passed directly", async () => {
+    const lib = createPiBamlLibrary({ available: true, settings });
+    const mockRegistry = createMockModelRegistry();
+
+    // Should attempt to compile without deadlock
+    try {
+      await lib.createExecutor({ "test.baml": "invalid" }, mockRegistry, "light");
     } catch (err) {
       expect((err as Error).message).not.toContain("not initialized");
     }

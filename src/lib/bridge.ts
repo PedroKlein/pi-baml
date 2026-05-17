@@ -1,23 +1,7 @@
 import { ClientRegistry } from "@boundaryml/baml";
-import type { BamlSettings, ModelTier } from "./types.js";
+import type { BamlSettings, ModelRegistry, ModelTier } from "./types.js";
 
-/**
- * Minimal ModelRegistry interface — only what we need from Pi.
- */
-export interface ModelRegistry {
-  find(provider: string, modelId: string): {
-    id: string;
-    provider: string;
-    api: string;
-    baseUrl: string;
-    headers?: Record<string, string>;
-    [key: string]: unknown;
-  } | undefined;
-  getApiKeyAndHeaders(model: { provider: string; [key: string]: unknown }): Promise<
-    { ok: true; apiKey?: string; headers?: Record<string, string> } |
-    { ok: false; error: string }
-  >;
-}
+export type { ModelRegistry };
 
 /** Result of resolving a model tier — everything needed for BAML. */
 export interface ResolvedModel {

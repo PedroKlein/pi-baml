@@ -142,14 +142,15 @@ pi.events.on("pi-baml:ready", (lib) => {
   baml = lib as PiBamlLibrary;
 });
 
-// Use it after session_start
+// Use it in session_start or any event handler — pass ctx.modelRegistry directly
 pi.on("session_start", async (event, ctx) => {
   if (!baml?.available) return;
 
-  // Create an executor from in-memory files (tier defaults to "standard")
+  // Create an executor from in-memory files
   const executor = await baml.createExecutor(
     { "classify.baml": classifyBamlSource },
-    "light",  // optional tier override
+    ctx.modelRegistry,  // required — no internal state
+    "light",            // optional tier override
   );
 
   const result = await executor.call("ClassifySkill", {
@@ -162,11 +163,12 @@ pi.on("session_start", async (event, ctx) => {
     classifyBamlSource,
     "ClassifySkill",
     { prompt: userMessage, skills: skillList },
+    ctx.modelRegistry,
     "light",
   );
 
   // Or call a registered function by name
-  const todos = await baml.call("ExtractTodos", { notes: meetingNotes }, "heavy");
+  const todos = await baml.call("ExtractTodos", { notes: meetingNotes }, ctx.modelRegistry, "heavy");
 });
 ```
 

@@ -246,12 +246,9 @@ function createPiBamlLibrary(input: CreateLibraryInput): PiBamlLibraryInternal;
 ```
 
 The returned `PiBamlLibraryInternal` extends `PiBamlLibrary` with:
-- `setModelRegistry(registry)` — called on session_start
 - `setRegistry(registry)` — called after function discovery
 
-State machine:
-- Before `setModelRegistry()`: all methods throw "not initialized"
-- After `setModelRegistry()`: methods resolve API keys and create executors
+The library is stateless with respect to ModelRegistry — callers pass it on every method call.
 - With `available: false`: all methods throw "BAML runtime unavailable"
 
 ### `src/index.ts`
@@ -265,12 +262,11 @@ export default createPiBamlExtension;
 Factory phase (synchronous):
 1. Parse config from `pi.settings`
 2. Create `PiBamlLibraryInternal` via `createPiBamlLibrary()`
-3. Create empty `FunctionsRegistry`
+3. Discover functions, create `FunctionsRegistry`, call `lib.setRegistry()`
 4. Emit `"pi-baml:ready"` with library
 5. Register all three tools
 
-Session_start phase (async):
-1. Capture `ctx.modelRegistry` via `lib.setModelRegistry()`
+No lifecycle handlers — the extension is fully initialized after factory.
 
 ## Model Resolution
 

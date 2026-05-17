@@ -115,13 +115,31 @@ export interface BamlError {
   readonly diagnostics?: readonly string[];
 }
 
+// ─── ModelRegistry Type ──────────────────────────────────────────────────────
+
+/** Model lookup and auth resolution interface (subset of Pi's ModelRegistry). */
+export interface ModelRegistry {
+  find(provider: string, modelId: string): {
+    id: string;
+    provider: string;
+    api: string;
+    baseUrl: string;
+    headers?: Record<string, string>;
+    [key: string]: unknown;
+  } | undefined;
+  getApiKeyAndHeaders(model: { provider: string; [key: string]: unknown }): Promise<
+    { ok: true; apiKey?: string; headers?: Record<string, string> } |
+    { ok: false; error: string }
+  >;
+}
+
 // ─── EventBus Library API ────────────────────────────────────────────────────
 
 /**
  * The public API shape emitted via pi.events on "pi-baml:ready".
  *
- * Extensions receive this during factory phase. Methods that require
- * ModelRegistry throw until session_start fires.
+ * All methods that interact with LLMs require a ModelRegistry parameter.
+ * Callers pass their own ctx.modelRegistry — no internal state or lifecycle coupling.
  */
 export interface PiBamlLibrary {
   /** Whether the BAML runtime loaded successfully */
@@ -130,6 +148,7 @@ export interface PiBamlLibrary {
   /** Create executor from in-memory .baml file contents */
   createExecutor(
     files: Record<string, string>,
+    modelRegistry: ModelRegistry,
     tier?: ModelTier,
   ): Promise<BamlExecutor>;
 
@@ -138,6 +157,7 @@ export interface PiBamlLibrary {
     code: string,
     fn: string,
     args: Record<string, unknown>,
+    modelRegistry: ModelRegistry,
     tier?: ModelTier,
   ): Promise<T>;
 
@@ -145,6 +165,7 @@ export interface PiBamlLibrary {
   call<T = unknown>(
     fn: string,
     args: Record<string, unknown>,
+    modelRegistry: ModelRegistry,
     tier?: ModelTier,
   ): Promise<T>;
 

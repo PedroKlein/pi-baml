@@ -72,10 +72,10 @@ describe("pi-baml extension factory", () => {
     expect(typeof lib["list"]).toBe("function");
   });
 
-  it("registers session_start handler", () => {
+  it("does not register session_start handler (stateless)", () => {
     const pi = createMockPi();
     createPiBamlExtension(pi, { settings: testSettings });
-    expect(pi.on).toHaveBeenCalledWith("session_start", expect.any(Function));
+    expect(pi.on).not.toHaveBeenCalled();
   });
 
   it("emits available=false when settings are invalid", () => {

@@ -2,6 +2,7 @@ import type {
   BamlExecutor,
   BamlSettings,
   FunctionInfo,
+  ModelRegistry,
   ModelTier,
   PiBamlLibrary,
 } from "./lib/types.js";
@@ -9,7 +10,8 @@ import { createBamlExecutor } from "./lib/executor.js";
 import { FunctionsRegistry } from "./lib/registry.js";
 import { RuntimeCache } from "./lib/cache.js";
 import { resolveModelTier } from "./lib/bridge.js";
-import type { ModelRegistry } from "./lib/bridge.js";
+
+export type { ModelRegistry };
 
 /** Input for creating the library object. */
 export interface CreateLibraryInput {
@@ -20,21 +22,20 @@ export interface CreateLibraryInput {
 
 /** Extended library with internal setters used by the extension factory. */
 export interface PiBamlLibraryInternal extends PiBamlLibrary {
-  setModelRegistry(registry: ModelRegistry): void;
   setRegistry(registry: FunctionsRegistry): void;
 }
 
-export { type ModelRegistry };
-
 /**
  * Create the PiBamlLibrary object emitted on the EventBus.
+ *
+ * Stateless with respect to ModelRegistry — callers pass it explicitly
+ * on every method call, eliminating session_start ordering issues.
  */
 export function createPiBamlLibrary(
   input: CreateLibraryInput,
 ): PiBamlLibraryInternal {
   const { available, loadError, settings } = input;
 
-  let modelRegistry: ModelRegistry | null = null;
   let functionsRegistry: FunctionsRegistry = FunctionsRegistry.fromGroups({});
   const runtimeCache = new RuntimeCache<BamlExecutor>();
 
@@ -44,13 +45,6 @@ export function createPiBamlLibrary(
     );
   }
 
-  function assertReady(): ModelRegistry {
-    if (!modelRegistry) {
-      throw new Error("pi-baml: not initialized. Available only after session_start.");
-    }
-    return modelRegistry;
-  }
-
   if (!available) {
     return {
       available: false,
@@ -58,7 +52,6 @@ export function createPiBamlLibrary(
       execBaml: async () => throwUnavailable(),
       call: async () => throwUnavailable(),
       list: () => throwUnavailable(),
-      setModelRegistry: () => {},
       setRegistry: () => {},
     };
   }
@@ -68,10 +61,10 @@ export function createPiBamlLibrary(
 
     async createExecutor(
       files: Record<string, string>,
+      modelRegistry: ModelRegistry,
       tier?: ModelTier,
     ): Promise<BamlExecutor> {
-      const registry = assertReady();
-      const { clientRegistry, bamlProvider } = await resolveModelTier(settings, registry, tier);
+      const { clientRegistry, bamlProvider } = await resolveModelTier(settings, modelRegistry, tier);
 
       return runtimeCache.getOrCreate(files, (f) =>
         createBamlExecutor({ files: f, clientRegistry, syntheticProvider: bamlProvider }),
@@ -82,10 +75,10 @@ export function createPiBamlLibrary(
       code: string,
       fn: string,
       args: Record<string, unknown>,
+      modelRegistry: ModelRegistry,
       tier?: ModelTier,
     ): Promise<T> {
-      const registry = assertReady();
-      const { clientRegistry, bamlProvider } = await resolveModelTier(settings, registry, tier);
+      const { clientRegistry, bamlProvider } = await resolveModelTier(settings, modelRegistry, tier);
 
       const executor = createBamlExecutor({
         files: { "dynamic.baml": code },
@@ -104,11 +97,11 @@ export function createPiBamlLibrary(
     async call<T = unknown>(
       fn: string,
       args: Record<string, unknown>,
+      modelRegistry: ModelRegistry,
       tier?: ModelTier,
     ): Promise<T> {
-      const registry = assertReady();
       const entry = functionsRegistry.resolve(fn);
-      const { clientRegistry, bamlProvider } = await resolveModelTier(settings, registry, tier);
+      const { clientRegistry, bamlProvider } = await resolveModelTier(settings, modelRegistry, tier);
 
       const executor = runtimeCache.getOrCreate(entry.files, (f) =>
         createBamlExecutor({ files: f, clientRegistry, syntheticProvider: bamlProvider }),
@@ -120,10 +113,6 @@ export function createPiBamlLibrary(
 
     list(group?: string): FunctionInfo[] {
       return functionsRegistry.list(group);
-    },
-
-    setModelRegistry(registry: ModelRegistry): void {
-      modelRegistry = registry;
     },
 
     setRegistry(registry: FunctionsRegistry): void {

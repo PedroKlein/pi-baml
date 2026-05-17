@@ -239,13 +239,6 @@ export function createPiBamlExtension(
     },
   });
 
-  // session_start: capture ModelRegistry
-  pi.on("session_start", async (_event: unknown, ctx: unknown) => {
-    const context = ctx as { modelRegistry?: import("./lib/bridge.js").ModelRegistry };
-    if (context.modelRegistry) {
-      lib.setModelRegistry(context.modelRegistry);
-    }
-  });
 }
 
 export default createPiBamlExtension;
