@@ -43,23 +43,25 @@ function createMockPi() {
       }),
     },
     on: vi.fn(),
-    settings: {
-      baml: {
-        proxy: {
-          anthropic: {
-            provider: "hai-proxy",
-            base_url: "http://localhost:6655/anthropic",
-          },
-        },
-        defaultModel: "anthropic/claude-4.5-haiku",
-      },
-    },
     // Test helpers
     _tools: tools,
     _emitted: emitted,
     _eventListeners: eventListeners,
   };
 }
+
+/** Settings override for tests — avoids reading from disk. */
+const testSettings = {
+  baml: {
+    proxy: {
+      anthropic: {
+        provider: "hai-proxy",
+        base_url: "http://localhost:6655/anthropic",
+      },
+    },
+    defaultModel: "anthropic/claude-4.5-haiku",
+  },
+};
 
 describe("pi-baml extension factory", () => {
   beforeEach(() => {
@@ -68,7 +70,7 @@ describe("pi-baml extension factory", () => {
 
   it("registers all three tools", () => {
     const pi = createMockPi();
-    createPiBamlExtension(pi);
+    createPiBamlExtension(pi, { settings: testSettings });
 
     expect(pi.registerTool).toHaveBeenCalledTimes(3);
     const names = pi._tools.map((t) => t.name).sort();
@@ -77,7 +79,7 @@ describe("pi-baml extension factory", () => {
 
   it("emits pi-baml:ready on EventBus during factory", () => {
     const pi = createMockPi();
-    createPiBamlExtension(pi);
+    createPiBamlExtension(pi, { settings: testSettings });
 
     expect(pi.events.emit).toHaveBeenCalledWith(
       "pi-baml:ready",
@@ -87,7 +89,7 @@ describe("pi-baml extension factory", () => {
 
   it("emits library with all expected methods", () => {
     const pi = createMockPi();
-    createPiBamlExtension(pi);
+    createPiBamlExtension(pi, { settings: testSettings });
 
     const emitCall = pi.events.emit.mock.calls[0];
     const lib = emitCall?.[1] as Record<string, unknown>;
@@ -103,14 +105,14 @@ describe("pi-baml extension factory", () => {
 
   it("registers session_start handler", () => {
     const pi = createMockPi();
-    createPiBamlExtension(pi);
+    createPiBamlExtension(pi, { settings: testSettings });
 
     expect(pi.on).toHaveBeenCalledWith("session_start", expect.any(Function));
   });
 
   it("session_start captures ModelRegistry", async () => {
     const pi = createMockPi();
-    createPiBamlExtension(pi);
+    createPiBamlExtension(pi, { settings: testSettings });
 
     // Get the library from the emit
     const lib = pi.events.emit.mock.calls[0]?.[1] as {
@@ -154,7 +156,7 @@ describe("pi-baml soft-fail", () => {
     const pi = createMockPi();
 
     // Call with bamlAvailable=false to test soft-fail path
-    createPiBamlExtension(pi, { bamlAvailable: false, loadError: "NAPI not found" });
+    createPiBamlExtension(pi, { bamlAvailable: false, loadError: "NAPI not found", settings: testSettings });
 
     expect(pi.events.emit).toHaveBeenCalledWith(
       "pi-baml:ready",

@@ -1,17 +1,14 @@
 import type { BamlError, BamlExecutor, BamlSettings } from "../lib/types.js";
+import type { ToolContext, ToolDefinition, ToolResult } from "./types.js";
 
 /** Factory type for creating executors from dynamic code. */
 export type ExecExecutorFactory = (input: {
   files: Record<string, string>;
   clientRef: string;
+  apiKey: string;
   defaultModel?: string;
   modelOverride?: string;
 }) => BamlExecutor;
-
-/** Tool definition shape. */
-export interface ToolDefinition {
-  execute(args: Record<string, unknown>): Promise<string>;
-}
 
 /**
  * Create the baml_exec tool.
@@ -24,7 +21,7 @@ export function createBamlExecTool(
   executorFactory: ExecExecutorFactory,
 ): ToolDefinition {
   return {
-    async execute(args: Record<string, unknown>): Promise<string> {
+    async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult> {
       const code = args["code"] as string;
       const functionName = args["function"] as string;
       const functionArgs = (args["args"] as Record<string, unknown>) ?? {};
@@ -33,14 +30,34 @@ export function createBamlExecTool(
       const model =
         typeof args["model"] === "string" ? args["model"] : undefined;
 
+      // Resolve effective model: explicit param > settings.defaultModel > session model
+      const effectiveDefaultModel = settings.defaultModel ?? deriveModelFromContext(ctx);
+
       // Validate we have a model to use
-      if (!settings.defaultModel && !model) {
+      if (!effectiveDefaultModel && !model) {
         const error: BamlError = {
           error:
-            "No default model configured. Pass model param or set baml.defaultModel in settings.",
+            "No model available. Pass model param, set baml.defaultModel in settings, or ensure a session model is active.",
           type: "configuration",
         };
-        return JSON.stringify(error);
+        return {
+          content: [{ type: "text", text: JSON.stringify(error) }],
+          details: undefined,
+        };
+      }
+
+      // Resolve API key from context
+      const apiKey = await resolveApiKey(settings, ctx);
+      if (!apiKey) {
+        const error: BamlError = {
+          error:
+            "No API key available. Ensure modelRegistry is accessible (session must be started) and proxy provider is configured.",
+          type: "configuration",
+        };
+        return {
+          content: [{ type: "text", text: JSON.stringify(error) }],
+          details: undefined,
+        };
       }
 
       // Build model override if provider/model specified
@@ -48,16 +65,17 @@ export function createBamlExecTool(
         provider && model
           ? `${provider}/${model}`
           : model
-            ? `${parseProvider(settings.defaultModel)}/${model}`
+            ? `${parseProvider(effectiveDefaultModel)}/${model}`
             : provider
-              ? `${provider}/${parseModel(settings.defaultModel)}`
+              ? `${provider}/${parseModel(effectiveDefaultModel)}`
               : undefined;
 
       try {
         const executor = executorFactory({
           files: { "dynamic.baml": code },
           clientRef: "PiClient",
-          ...(settings.defaultModel !== undefined && { defaultModel: settings.defaultModel }),
+          apiKey,
+          ...(effectiveDefaultModel !== undefined && { defaultModel: effectiveDefaultModel }),
           ...(modelOverride !== undefined && { modelOverride }),
         });
 
@@ -66,22 +84,67 @@ export function createBamlExecTool(
         // Dispose dynamic executors after use
         executor.dispose();
 
-        return JSON.stringify(result);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: undefined,
+        };
       } catch (err) {
         if (err instanceof Error && "bamlError" in err) {
-          return JSON.stringify(
-            (err as Error & { bamlError: BamlError }).bamlError,
-          );
+          const bamlError = (err as Error & { bamlError: BamlError }).bamlError;
+          return {
+            content: [{ type: "text", text: JSON.stringify(bamlError) }],
+            details: undefined,
+          };
         }
         const message = err instanceof Error ? err.message : String(err);
         const error: BamlError = {
           error: message,
           type: "execution",
         };
-        return JSON.stringify(error);
+        return {
+          content: [{ type: "text", text: JSON.stringify(error) }],
+          details: undefined,
+        };
       }
     },
   };
+}
+
+/**
+ * Derive a "provider/model" string from the current session model context.
+ * Returns undefined if no model is available in context.
+ */
+function deriveModelFromContext(ctx?: ToolContext): string | undefined {
+  if (!ctx?.model) return undefined;
+  // Use the model's provider and id to form "provider/model-id"
+  return `${ctx.model.provider}/${ctx.model.id}`;
+}
+
+/**
+ * Resolve API key from the tool context's modelRegistry.
+ *
+ * Looks up the Pi provider configured in baml.proxy for the effective
+ * BAML provider. Returns undefined if no registry or key is available.
+ */
+async function resolveApiKey(
+  settings: BamlSettings,
+  ctx?: ToolContext,
+): Promise<string | undefined> {
+  if (!ctx?.modelRegistry) return undefined;
+
+  // Find the first proxy entry to determine which Pi provider to query
+  const proxyEntries = Object.values(settings.proxy);
+  if (proxyEntries.length === 0) return undefined;
+
+  // Use the first proxy entry's provider for key resolution
+  const piProvider = proxyEntries[0]!.provider;
+
+  try {
+    const result = await ctx.modelRegistry.getApiKeyForProvider(piProvider);
+    return result ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseProvider(defaultModel: string | undefined): string {

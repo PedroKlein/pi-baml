@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { parseBamlSettings } from "./lib/config.js";
 import { FunctionsRegistry } from "./lib/registry.js";
 import { createPiBamlLibrary, type PiBamlLibraryInternal } from "./eventbus.js";
@@ -6,11 +9,14 @@ import { createBamlRunTool } from "./tools/baml-run.js";
 import { createBamlExecTool } from "./tools/baml-exec.js";
 import { createBamlExecutor } from "./lib/executor.js";
 import type { BamlError } from "./lib/types.js";
+import type { ToolContext, ToolResult } from "./tools/types.js";
 
 /** Options for testing — allows injecting failure state. */
 export interface ExtensionOptions {
   bamlAvailable?: boolean;
   loadError?: string;
+  /** Override settings (for testing). When provided, skips disk read. */
+  settings?: unknown;
 }
 
 /** Minimal Pi extension API subset we depend on. */
@@ -19,13 +25,27 @@ interface PiExtensionAPI {
     name: string;
     description: string;
     parameters: unknown;
-    execute: (args: Record<string, unknown>) => Promise<string>;
+    execute: (...args: unknown[]) => Promise<ToolResult>;
   }): void;
   events: {
     emit(event: string, payload: unknown): void;
   };
   on(event: string, handler: (...args: unknown[]) => unknown): void;
-  settings?: unknown;
+}
+
+/** Path to Pi's global settings.json */
+const GLOBAL_SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
+
+/**
+ * Read Pi's settings.json from disk.
+ * Returns {} on any error (missing file, invalid JSON, permissions).
+ */
+function readSettingsFromDisk(): unknown {
+  try {
+    return JSON.parse(readFileSync(GLOBAL_SETTINGS_PATH, "utf-8"));
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -44,8 +64,9 @@ export function createPiBamlExtension(
   const bamlAvailable = options?.bamlAvailable ?? true;
   const loadError = options?.loadError;
 
-  // Read settings
-  const settings = parseBamlSettings(pi.settings ?? {});
+  // Read settings from disk (pi.settings does not exist in Pi's extension API)
+  const rawSettings = options?.settings !== undefined ? options.settings : readSettingsFromDisk();
+  const settings = parseBamlSettings(rawSettings);
 
   // Create the library (emitted on EventBus)
   const lib: PiBamlLibraryInternal = createPiBamlLibrary({
@@ -65,6 +86,7 @@ export function createPiBamlExtension(
   function toolExecutorFactory(input: {
     files: Record<string, string>;
     clientRef: string;
+    apiKey: string;
     defaultModel?: string;
     modelOverride?: string;
   }) {
@@ -83,11 +105,31 @@ export function createPiBamlExtension(
     return createBamlExecutor({
       files: input.files,
       proxy: settings.proxy,
-      apiKey: "__placeholder__", // Resolved at call time in real usage
+      apiKey: input.apiKey,
       clientRef: input.clientRef,
       ...(input.defaultModel !== undefined && { defaultModel: input.defaultModel }),
       ...(input.modelOverride !== undefined && { modelOverride: input.modelOverride }),
     });
+  }
+
+  /**
+   * Extract ToolContext from Pi's execute arguments.
+   *
+   * Pi calls: execute(toolCallId, params, signal, onUpdate, ctx)
+   * Our registerTool passes these through as rest args.
+   * ctx is the 5th argument (index 4).
+   */
+  function extractToolContext(piArgs: unknown[]): ToolContext | undefined {
+    // Pi's ToolDefinition.execute signature:
+    // execute(toolCallId: string, params, signal, onUpdate, ctx: ExtensionContext)
+    // The ctx is the 5th positional argument
+    const ctx = piArgs[4] as Record<string, unknown> | undefined;
+    if (!ctx) return undefined;
+
+    const model = ctx["model"] as { id: string; provider: string; api: string; baseUrl: string } | undefined;
+    const modelRegistry = ctx["modelRegistry"] as ToolContext["modelRegistry"] | undefined;
+
+    return { model, modelRegistry };
   }
 
   // Register tools
@@ -105,10 +147,13 @@ export function createPiBamlExtension(
         },
       },
     },
-    execute: listTool.execute,
+    execute: (...piArgs: unknown[]) => {
+      const params = (piArgs[1] ?? piArgs[0] ?? {}) as Record<string, unknown>;
+      return listTool.execute(params);
+    },
   });
 
-  const runTool = createBamlRunTool(registry, toolExecutorFactory);
+  const runTool = createBamlRunTool(registry, toolExecutorFactory, settings);
   pi.registerTool({
     name: "baml_run",
     description:
@@ -131,7 +176,11 @@ export function createPiBamlExtension(
       },
       required: ["function", "args"],
     },
-    execute: runTool.execute,
+    execute: (...piArgs: unknown[]) => {
+      const params = (piArgs[1] ?? piArgs[0] ?? {}) as Record<string, unknown>;
+      const ctx = extractToolContext(piArgs);
+      return runTool.execute(params, ctx);
+    },
   });
 
   const execTool = createBamlExecTool(settings, toolExecutorFactory);
@@ -165,7 +214,11 @@ export function createPiBamlExtension(
       },
       required: ["code", "function", "args"],
     },
-    execute: execTool.execute,
+    execute: (...piArgs: unknown[]) => {
+      const params = (piArgs[1] ?? piArgs[0] ?? {}) as Record<string, unknown>;
+      const ctx = extractToolContext(piArgs);
+      return execTool.execute(params, ctx);
+    },
   });
 
   // session_start: capture ModelRegistry, compile registry functions

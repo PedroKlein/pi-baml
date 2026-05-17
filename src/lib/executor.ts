@@ -3,8 +3,13 @@ import {
   ClientRegistry,
   Collector,
 } from "@boundaryml/baml";
+import {
+  BamlClientHttpError,
+  BamlValidationError,
+  BamlClientFinishReasonError,
+} from "@boundaryml/baml";
 import type { BamlExecutor, ProxyConfig, BamlError } from "./types.js";
-import { createClientRegistryConfig } from "./bridge.js";
+import { createClientRegistryConfig, parseClientRef } from "./bridge.js";
 
 /** Input for creating a BAML executor. */
 export interface CreateExecutorInput {
@@ -23,6 +28,39 @@ export interface CreateExecutorInput {
 }
 
 /**
+ * Build a synthetic `client PiClient { ... }` BAML block.
+ *
+ * BAML validates all client references at compile time.
+ * This placeholder satisfies the compiler; the real credentials
+ * are injected via ClientRegistry.addLlmClient() at runtime.
+ */
+function buildSyntheticClientBlock(provider: string): string {
+  return `client PiClient {
+  provider ${provider}
+  options {
+    model "placeholder"
+    api_key "placeholder"
+  }
+}
+`;
+}
+
+/**
+ * Derive the BAML provider name for the synthetic client block.
+ *
+ * Resolution order: modelOverride > defaultModel > "anthropic" (safe fallback).
+ * Only the provider portion (before the slash) is used.
+ */
+function deriveSyntheticProvider(
+  defaultModel: string | undefined,
+  modelOverride: string | undefined,
+): string {
+  const ref = modelOverride ?? defaultModel;
+  if (!ref) return "anthropic";
+  return parseClientRef(ref).provider;
+}
+
+/**
  * Create a BAML executor from file contents.
  *
  * Compiles the .baml files via BamlRuntime.fromFiles(),
@@ -35,10 +73,18 @@ export function createBamlExecutor(input: CreateExecutorInput): BamlExecutor {
   const { files, proxy, apiKey, clientRef, defaultModel, modelOverride } =
     input;
 
+  // Inject synthetic PiClient definition so BAML compiler can resolve it.
+  // The real credentials are set via ClientRegistry at call time.
+  const syntheticProvider = deriveSyntheticProvider(defaultModel, modelOverride);
+  const compilationFiles: Record<string, string> = {
+    ...files,
+    "__pi_client.baml": buildSyntheticClientBlock(syntheticProvider),
+  };
+
   // Compile the runtime
   let runtime: BamlRuntime;
   try {
-    runtime = BamlRuntime.fromFiles("/", files, {});
+    runtime = BamlRuntime.fromFiles("/", compilationFiles, {});
   } catch (err) {
     const message =
       err instanceof Error ? err.message : String(err);
@@ -98,8 +144,22 @@ export function createBamlExecutor(input: CreateExecutorInput): BamlExecutor {
 
         if (!result.isOk()) {
           const rawOutput = collector.last?.rawLlmResponse ?? null;
+          // Try to extract a meaningful error by calling parsed()
+          let parseError: string | null = null;
+          try {
+            result.parsed(false);
+          } catch (parseErr) {
+            // Use structured BAML error types for better messages
+            parseError = extractBamlErrorDetail(parseErr)
+              ?? (parseErr instanceof Error ? parseErr.message : String(parseErr));
+          }
+
+          const errorMessage = parseError
+            ? `BAML execution failed for function '${functionName}': ${parseError}`
+            : `BAML execution failed for function '${functionName}'`;
+
           const error: BamlError = {
-            error: `BAML execution failed for function '${functionName}'`,
+            error: errorMessage,
             type: "execution",
             ...(rawOutput !== null && { rawOutput }),
           };
@@ -116,10 +176,12 @@ export function createBamlExecutor(input: CreateExecutorInput): BamlExecutor {
           throw err;
         }
 
-        // Wrap unexpected errors
+        // Extract structured info from BAML's typed errors
         const rawOutput = collector.last?.rawLlmResponse ?? null;
+        const errorDetail = extractBamlErrorDetail(err);
+
         const message =
-          err instanceof Error ? err.message : String(err);
+          errorDetail ?? (err instanceof Error ? err.message : String(err));
         const error: BamlError = {
           error: `BAML execution failed for function '${functionName}': ${message}`,
           type: "execution",
@@ -133,4 +195,35 @@ export function createBamlExecutor(input: CreateExecutorInput): BamlExecutor {
       disposed = true;
     },
   };
+}
+
+/**
+ * Extract a human-readable error detail from BAML's typed error classes.
+ *
+ * BAML throws BamlClientHttpError (HTTP failures), BamlValidationError
+ * (output parse failures), and BamlClientFinishReasonError (truncated responses).
+ * This extracts the structured fields into a single message.
+ */
+function extractBamlErrorDetail(err: unknown): string | null {
+  if (!(err instanceof Error)) return null;
+
+  // HTTP-level failure (401, 429, 500, connection refused, etc.)
+  const httpErr = BamlClientHttpError.from(err);
+  if (httpErr) {
+    return `HTTP ${httpErr.status_code} from client "${httpErr.client_name}": ${httpErr.message}`;
+  }
+
+  // Output validation failure (LLM responded but output doesn't match schema)
+  const validationErr = BamlValidationError.from(err);
+  if (validationErr) {
+    return `Output validation failed: ${validationErr.message}\nRaw output: ${validationErr.raw_output}`;
+  }
+
+  // Finish reason error (response truncated, content filter, etc.)
+  const finishErr = BamlClientFinishReasonError.from(err);
+  if (finishErr) {
+    return `LLM finish reason error${finishErr.finish_reason ? ` (${finishErr.finish_reason})` : ""}: ${finishErr.message}`;
+  }
+
+  return null;
 }

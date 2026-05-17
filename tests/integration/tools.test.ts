@@ -69,4 +69,37 @@ describe("full tool integration", () => {
     const runtime = BamlRuntime.fromFiles("/", { "main.baml": source }, {});
     expect(runtime).toBeDefined();
   });
+
+  it("createBamlExecutor injects synthetic PiClient so compilation succeeds", async () => {
+    const { createBamlExecutor } = await import("../../src/lib/executor.js");
+
+    // This code references 'client PiClient' — would fail without synthetic injection
+    const code = `
+class Sentiment {
+  label string
+  score float
+}
+
+function Analyze(text: string) -> Sentiment {
+  client PiClient
+  prompt #"
+    Analyze sentiment: {{ text }}
+    {{ ctx.output_format }}
+  "#
+}
+`;
+
+    // Should NOT throw — the synthetic PiClient block satisfies the compiler
+    const executor = createBamlExecutor({
+      files: { "dynamic.baml": code },
+      proxy: { anthropic: { provider: "test", base_url: "http://localhost:9999" } },
+      apiKey: "test-key",
+      clientRef: "PiClient",
+      defaultModel: "anthropic/claude-4.5-haiku",
+    });
+
+    expect(executor).toBeDefined();
+    expect(typeof executor.call).toBe("function");
+    expect(typeof executor.dispose).toBe("function");
+  });
 });

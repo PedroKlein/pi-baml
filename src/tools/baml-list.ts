@@ -1,9 +1,5 @@
 import type { FunctionsRegistry } from "../lib/registry.js";
-
-/** Tool definition shape (subset of Pi's tool interface). */
-export interface ToolDefinition {
-  execute(args: Record<string, unknown>): Promise<string>;
-}
+import type { ToolDefinition, ToolResult } from "./types.js";
 
 /**
  * Create the baml_list tool.
@@ -13,20 +9,29 @@ export interface ToolDefinition {
  */
 export function createBamlListTool(registry: FunctionsRegistry): ToolDefinition {
   return {
-    async execute(args: Record<string, unknown>): Promise<string> {
+    async execute(args: Record<string, unknown>): Promise<ToolResult> {
       const group =
         typeof args["group"] === "string" ? args["group"] : undefined;
 
       if (registry.isEmpty) {
-        return JSON.stringify({
-          message:
-            "No BAML functions found. Place .baml files in subdirectories of: " +
-            "<project>/.pi/baml/, ~/.pi/baml/, or ~/.agents/baml/",
-        });
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              message:
+                "No BAML functions found. Place .baml files in subdirectories of: " +
+                "<project>/.pi/baml/, ~/.pi/baml/, or ~/.agents/baml/",
+            }),
+          }],
+          details: undefined,
+        };
       }
 
       const functions = registry.list(group);
-      return JSON.stringify(functions);
+      return {
+        content: [{ type: "text", text: JSON.stringify(functions) }],
+        details: undefined,
+      };
     },
   };
 }

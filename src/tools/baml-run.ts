@@ -1,17 +1,14 @@
 import type { FunctionsRegistry } from "../lib/registry.js";
-import type { BamlError, BamlExecutor, FunctionEntry } from "../lib/types.js";
+import type { BamlError, BamlExecutor, BamlSettings, FunctionEntry } from "../lib/types.js";
+import type { ToolContext, ToolDefinition, ToolResult } from "./types.js";
 
 /** Factory type for creating executors (injected dependency). */
 export type ExecutorFactory = (input: {
   files: Record<string, string>;
   clientRef: string;
+  apiKey: string;
   modelOverride?: string;
 }) => BamlExecutor;
-
-/** Tool definition shape. */
-export interface ToolDefinition {
-  execute(args: Record<string, unknown>): Promise<string>;
-}
 
 /**
  * Create the baml_run tool.
@@ -22,9 +19,10 @@ export interface ToolDefinition {
 export function createBamlRunTool(
   registry: FunctionsRegistry,
   executorFactory: ExecutorFactory,
+  settings: BamlSettings,
 ): ToolDefinition {
   return {
-    async execute(args: Record<string, unknown>): Promise<string> {
+    async execute(args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolResult> {
       const functionName = args["function"] as string;
       const functionArgs = (args["args"] as Record<string, unknown>) ?? {};
       const model =
@@ -40,7 +38,24 @@ export function createBamlRunTool(
           error: message,
           type: "configuration",
         };
-        return JSON.stringify(error);
+        return {
+          content: [{ type: "text", text: JSON.stringify(error) }],
+          details: undefined,
+        };
+      }
+
+      // Resolve API key from context
+      const apiKey = await resolveApiKey(settings, ctx);
+      if (!apiKey) {
+        const error: BamlError = {
+          error:
+            "No API key available. Ensure modelRegistry is accessible (session must be started) and proxy provider is configured.",
+          type: "configuration",
+        };
+        return {
+          content: [{ type: "text", text: JSON.stringify(error) }],
+          details: undefined,
+        };
       }
 
       // Create executor and call function
@@ -48,24 +63,55 @@ export function createBamlRunTool(
         const executor = executorFactory({
           files: entry.files,
           clientRef: `${entry.group}/default`,
+          apiKey,
           ...(model !== undefined && { modelOverride: model }),
         });
 
         const result = await executor.call(entry.name, functionArgs);
-        return JSON.stringify(result);
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: undefined,
+        };
       } catch (err) {
         if (err instanceof Error && "bamlError" in err) {
-          return JSON.stringify(
-            (err as Error & { bamlError: BamlError }).bamlError,
-          );
+          const bamlError = (err as Error & { bamlError: BamlError }).bamlError;
+          return {
+            content: [{ type: "text", text: JSON.stringify(bamlError) }],
+            details: undefined,
+          };
         }
         const message = err instanceof Error ? err.message : String(err);
         const error: BamlError = {
           error: message,
           type: "execution",
         };
-        return JSON.stringify(error);
+        return {
+          content: [{ type: "text", text: JSON.stringify(error) }],
+          details: undefined,
+        };
       }
     },
   };
+}
+
+/**
+ * Resolve API key from the tool context's modelRegistry.
+ */
+async function resolveApiKey(
+  settings: BamlSettings,
+  ctx?: ToolContext,
+): Promise<string | undefined> {
+  if (!ctx?.modelRegistry) return undefined;
+
+  const proxyEntries = Object.values(settings.proxy);
+  if (proxyEntries.length === 0) return undefined;
+
+  const piProvider = proxyEntries[0]!.provider;
+
+  try {
+    const result = await ctx.modelRegistry.getApiKeyForProvider(piProvider);
+    return result ?? undefined;
+  } catch {
+    return undefined;
+  }
 }

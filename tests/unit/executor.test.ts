@@ -19,6 +19,15 @@ vi.mock("@boundaryml/baml", () => ({
     last: null,
     logs: [],
   })),
+  BamlClientHttpError: {
+    from: () => null,
+  },
+  BamlValidationError: {
+    from: () => null,
+  },
+  BamlClientFinishReasonError: {
+    from: () => null,
+  },
 }));
 
 describe("createBamlExecutor", () => {
@@ -57,7 +66,14 @@ describe("createBamlExecutor", () => {
       });
 
       expect(executor).toBeDefined();
-      expect(mockFromFiles).toHaveBeenCalledWith("/", files, {});
+      expect(mockFromFiles).toHaveBeenCalledWith(
+        "/",
+        expect.objectContaining({
+          ...files,
+          "__pi_client.baml": expect.stringContaining("client PiClient"),
+        }),
+        {},
+      );
     });
 
     it("throws BamlError with type=compilation on invalid syntax", () => {

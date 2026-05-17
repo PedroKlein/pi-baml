@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { createBamlListTool } from "../../src/tools/baml-list.js";
 import { FunctionsRegistry } from "../../src/lib/registry.js";
+import type { ToolResult } from "../../src/tools/types.js";
+
+/** Extract text content from a ToolResult for assertions. */
+function textOf(result: ToolResult): string {
+  return result.content.map((c) => c.text).join("");
+}
 
 describe("baml_list tool", () => {
   it("returns all functions formatted for agent", async () => {
@@ -22,7 +28,7 @@ describe("baml_list tool", () => {
     const tool = createBamlListTool(registry);
     const result = await tool.execute({});
 
-    const parsed = JSON.parse(result);
+    const parsed = JSON.parse(textOf(result));
     expect(parsed).toHaveLength(2);
     expect(parsed.map((f: { name: string }) => f.name).sort()).toEqual([
       "ClassifyIntent",
@@ -53,7 +59,7 @@ describe("baml_list tool", () => {
     const tool = createBamlListTool(registry);
     const result = await tool.execute({ group: "extraction" });
 
-    const parsed = JSON.parse(result);
+    const parsed = JSON.parse(textOf(result));
     expect(parsed).toHaveLength(1);
     expect(parsed[0].name).toBe("ExtractItems");
   });
@@ -63,8 +69,9 @@ describe("baml_list tool", () => {
 
     const tool = createBamlListTool(registry);
     const result = await tool.execute({});
+    const text = textOf(result);
 
-    expect(result).toContain("No BAML functions found");
-    expect(result).toContain(".pi/baml/");
+    expect(text).toContain("No BAML functions found");
+    expect(text).toContain(".pi/baml/");
   });
 });
