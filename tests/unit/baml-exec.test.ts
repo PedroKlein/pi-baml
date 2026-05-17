@@ -43,7 +43,16 @@ function Classify(text: string) -> "positive" | "negative" {
 
   function createMockExecutorFactory(result: unknown) {
     const mockExecutor: BamlExecutor = {
-      call: vi.fn().mockResolvedValue(result),
+      call: vi.fn().mockResolvedValue({
+        parsed: result,
+        metadata: {
+          inputTokens: 80,
+          outputTokens: 10,
+          cachedInputTokens: null,
+          durationMs: 950,
+          model: "PiClient",
+        },
+      }),
       dispose: vi.fn(),
     };
     return vi.fn().mockReturnValue(mockExecutor);

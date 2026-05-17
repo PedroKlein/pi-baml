@@ -79,14 +79,14 @@ export function createBamlExecTool(
           ...(modelOverride !== undefined && { modelOverride }),
         });
 
-        const result = await executor.call(functionName, functionArgs);
+        const callResult = await executor.call(functionName, functionArgs);
 
         // Dispose dynamic executors after use
         executor.dispose();
 
         return {
-          content: [{ type: "text", text: JSON.stringify(result) }],
-          details: undefined,
+          content: [{ type: "text", text: JSON.stringify(callResult.parsed) }],
+          details: { metadata: callResult.metadata },
         };
       } catch (err) {
         if (err instanceof Error && "bamlError" in err) {

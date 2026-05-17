@@ -144,7 +144,8 @@ export function createPiBamlLibrary(
       });
 
       try {
-        return await executor.call<T>(fn, args);
+        const result = await executor.call<T>(fn, args);
+        return result.parsed;
       } finally {
         executor.dispose();
       }
@@ -172,7 +173,8 @@ export function createPiBamlLibrary(
         }),
       );
 
-      return executor.call<T>(entry.name, args);
+      const result = await executor.call<T>(entry.name, args);
+      return result.parsed;
     },
 
     list(group?: string): FunctionInfo[] {

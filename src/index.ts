@@ -8,8 +8,52 @@ import { createBamlListTool } from "./tools/baml-list.js";
 import { createBamlRunTool } from "./tools/baml-run.js";
 import { createBamlExecTool } from "./tools/baml-exec.js";
 import { createBamlExecutor } from "./lib/executor.js";
+import {
+  renderBamlExecCall,
+  renderBamlRunCall,
+  renderBamlListCall,
+  renderBamlResult,
+  renderBamlListResult,
+} from "./tools/render.js";
 import type { BamlError } from "./lib/types.js";
 import type { ToolContext, ToolResult } from "./tools/types.js";
+
+/**
+ * Create a Text component for tool rendering.
+ *
+ * Uses dynamic import of @earendil-works/pi-tui with caching.
+ * Falls back to a minimal component satisfying Pi's Component interface
+ * when the TUI package isn't available (e.g. in unit tests).
+ */
+type TextConstructor = new (text: string, px: number, py: number) => unknown;
+let textClassPromise: Promise<TextConstructor | null> | undefined;
+
+function getTextClass(): Promise<TextConstructor | null> {
+  if (!textClassPromise) {
+    textClassPromise = import("@earendil-works/pi-tui")
+      .then((tui) => (tui as { Text: TextConstructor }).Text)
+      .catch(() => null);
+  }
+  return textClassPromise;
+}
+
+// Eagerly start resolution so it's ready by the time renderCall is invoked
+let resolvedTextClass: TextConstructor | null | undefined;
+getTextClass().then((cls) => { resolvedTextClass = cls; });
+
+function createTextComponent(text: string): unknown {
+  // Use pre-resolved class if available (synchronous fast path)
+  if (resolvedTextClass) {
+    return new resolvedTextClass(text, 0, 0);
+  }
+
+  // Fallback: minimal component matching Pi's Component.render interface
+  return {
+    render(_width: number) {
+      return text.split("\n");
+    },
+  };
+}
 
 /** Options for testing — allows injecting failure state. */
 export interface ExtensionOptions {
@@ -26,6 +70,8 @@ interface PiExtensionAPI {
     description: string;
     parameters: unknown;
     execute: (...args: unknown[]) => Promise<ToolResult>;
+    renderCall?: (args: unknown, theme: unknown, context: unknown) => unknown;
+    renderResult?: (result: unknown, options: unknown, theme: unknown, context: unknown) => unknown;
   }): void;
   events: {
     emit(event: string, payload: unknown): void;
@@ -60,6 +106,14 @@ export function createPiBamlExtension(
   pi: PiExtensionAPI,
   options?: ExtensionOptions,
 ): void {
+  // Suppress BAML's built-in INFO logging (prints prompts/responses to stdout)
+  try {
+    // Dynamic import avoids hard failure when @boundaryml/baml isn't available
+    import("@boundaryml/baml").then(({ setLogLevel }) => {
+      setLogLevel("warn");
+    }).catch(() => { /* BAML unavailable */ });
+  } catch { /* ignore */ }
+
   // Determine BAML availability
   const bamlAvailable = options?.bamlAvailable ?? true;
   const loadError = options?.loadError;
@@ -151,6 +205,17 @@ export function createPiBamlExtension(
       const params = (piArgs[1] ?? piArgs[0] ?? {}) as Record<string, unknown>;
       return listTool.execute(params);
     },
+    renderCall(args: unknown, theme: unknown) {
+      const t = theme as { fg(c: string, s: string): string; bold(s: string): string };
+      const a = (args ?? {}) as Record<string, unknown>;
+      return createTextComponent(renderBamlListCall(a, t));
+    },
+    renderResult(result: unknown, options: unknown, theme: unknown) {
+      const t = theme as { fg(c: string, s: string): string; bold(s: string): string };
+      const r = result as { content: { type: string; text?: string }[]; details?: unknown };
+      const opts = options as { isPartial?: boolean };
+      return createTextComponent(renderBamlListResult(r, t, opts.isPartial));
+    },
   });
 
   const runTool = createBamlRunTool(registry, toolExecutorFactory, settings);
@@ -180,6 +245,17 @@ export function createPiBamlExtension(
       const params = (piArgs[1] ?? piArgs[0] ?? {}) as Record<string, unknown>;
       const ctx = extractToolContext(piArgs);
       return runTool.execute(params, ctx);
+    },
+    renderCall(args: unknown, theme: unknown) {
+      const t = theme as { fg(c: string, s: string): string; bold(s: string): string };
+      const a = (args ?? {}) as Record<string, unknown>;
+      return createTextComponent(renderBamlRunCall(a, t));
+    },
+    renderResult(result: unknown, options: unknown, theme: unknown) {
+      const t = theme as { fg(c: string, s: string): string; bold(s: string): string };
+      const r = result as { content: { type: string; text?: string }[]; details?: unknown };
+      const opts = options as { isPartial?: boolean };
+      return createTextComponent(renderBamlResult(r, t, opts.isPartial));
     },
   });
 
@@ -218,6 +294,17 @@ export function createPiBamlExtension(
       const params = (piArgs[1] ?? piArgs[0] ?? {}) as Record<string, unknown>;
       const ctx = extractToolContext(piArgs);
       return execTool.execute(params, ctx);
+    },
+    renderCall(args: unknown, theme: unknown) {
+      const t = theme as { fg(c: string, s: string): string; bold(s: string): string };
+      const a = (args ?? {}) as Record<string, unknown>;
+      return createTextComponent(renderBamlExecCall(a, t));
+    },
+    renderResult(result: unknown, options: unknown, theme: unknown) {
+      const t = theme as { fg(c: string, s: string): string; bold(s: string): string };
+      const r = result as { content: { type: string; text?: string }[]; details?: unknown };
+      const opts = options as { isPartial?: boolean };
+      return createTextComponent(renderBamlResult(r, t, opts.isPartial));
     },
   });
 

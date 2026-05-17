@@ -109,9 +109,16 @@ describe("createBamlExecutor", () => {
 
       const result = await executor.call("Extract", { text: "meeting notes" });
 
-      expect(result).toEqual([
+      expect(result.parsed).toEqual([
         { description: "do stuff", priority: "high" },
       ]);
+      expect(result.metadata).toEqual({
+        inputTokens: null,
+        outputTokens: null,
+        cachedInputTokens: null,
+        durationMs: null,
+        model: null,
+      });
       expect(mockCallFunction).toHaveBeenCalledWith(
         "Extract",
         { text: "meeting notes" },

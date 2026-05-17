@@ -46,6 +46,28 @@ export interface PiBamlConfig {
   readonly model?: string;
 }
 
+/** Metadata captured from BAML's Collector after a function call. */
+export interface BamlCallMetadata {
+  /** Number of input tokens consumed (null if provider didn't report) */
+  readonly inputTokens: number | null;
+  /** Number of output tokens generated (null if provider didn't report) */
+  readonly outputTokens: number | null;
+  /** Number of cached input tokens (null if not applicable) */
+  readonly cachedInputTokens: number | null;
+  /** Wall-clock duration of the LLM call in milliseconds (null if unavailable) */
+  readonly durationMs: number | null;
+  /** Model/client name used for the call (null if unavailable) */
+  readonly model: string | null;
+}
+
+/** Result of a BAML function call including parsed output and execution metadata. */
+export interface BamlCallResult<T = unknown> {
+  /** The parsed, typed output from the BAML function */
+  readonly parsed: T;
+  /** Execution metadata (tokens, timing, model) */
+  readonly metadata: BamlCallMetadata;
+}
+
 /**
  * Minimal interface for executing BAML functions.
  *
@@ -53,11 +75,11 @@ export interface PiBamlConfig {
  * Two methods: call a function, release resources.
  */
 export interface BamlExecutor {
-  /** Execute a named function with arguments, returning parsed typed output. */
+  /** Execute a named function with arguments, returning parsed typed output with metadata. */
   call<T = unknown>(
     functionName: string,
     args: Record<string, unknown>,
-  ): Promise<T>;
+  ): Promise<BamlCallResult<T>>;
 
   /** Release resources. Safe to call multiple times. */
   dispose(): void;

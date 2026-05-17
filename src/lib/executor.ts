@@ -8,7 +8,7 @@ import {
   BamlValidationError,
   BamlClientFinishReasonError,
 } from "@boundaryml/baml";
-import type { BamlExecutor, ProxyConfig, BamlError } from "./types.js";
+import type { BamlExecutor, BamlCallMetadata, BamlCallResult, ProxyConfig, BamlError } from "./types.js";
 import { createClientRegistryConfig, parseClientRef } from "./bridge.js";
 
 /** Input for creating a BAML executor. */
@@ -123,7 +123,7 @@ export function createBamlExecutor(input: CreateExecutorInput): BamlExecutor {
     async call<T = unknown>(
       functionName: string,
       args: Record<string, unknown>,
-    ): Promise<T> {
+    ): Promise<BamlCallResult<T>> {
       if (disposed) {
         throw new Error(
           "Executor has been disposed. Create a new executor to make calls.",
@@ -166,7 +166,8 @@ export function createBamlExecutor(input: CreateExecutorInput): BamlExecutor {
           throw Object.assign(new Error(error.error), { bamlError: error });
         }
 
-        return result.parsed(false) as T;
+        const metadata = extractMetadata(collector);
+        return { parsed: result.parsed(false) as T, metadata };
       } catch (err) {
         // Re-throw if already a BamlError
         if (
@@ -194,6 +195,57 @@ export function createBamlExecutor(input: CreateExecutorInput): BamlExecutor {
     dispose(): void {
       disposed = true;
     },
+  };
+}
+
+/**
+ * Extract execution metadata from BAML's Collector.
+ *
+ * Reads token usage, timing, and model info from the last function log.
+ */
+function extractMetadata(collector: Collector): BamlCallMetadata {
+  const last = collector.last;
+  if (!last) {
+    return {
+      inputTokens: null,
+      outputTokens: null,
+      cachedInputTokens: null,
+      durationMs: null,
+      model: null,
+    };
+  }
+
+  const usage = last.usage;
+  const timing = last.timing;
+
+  // Try to get model/client name from the selected call
+  let model: string | null = null;
+  try {
+    const selected = last.selectedCall as { clientName?: string } | null;
+    if (selected && typeof selected === "object" && "clientName" in selected) {
+      model = (selected as { clientName: string }).clientName ?? null;
+    }
+  } catch {
+    // selectedCall may not be available in all BAML versions
+  }
+
+  // cachedInputTokens may not exist in older BAML versions
+  let cachedInputTokens: number | null = null;
+  try {
+    const usageAny = usage as unknown as { cachedInputTokens?: number | null };
+    if ("cachedInputTokens" in usageAny && usageAny.cachedInputTokens != null) {
+      cachedInputTokens = usageAny.cachedInputTokens;
+    }
+  } catch {
+    // Property doesn't exist in this version
+  }
+
+  return {
+    inputTokens: usage?.inputTokens ?? null,
+    outputTokens: usage?.outputTokens ?? null,
+    cachedInputTokens,
+    durationMs: timing?.durationMs ?? null,
+    model,
   };
 }
 

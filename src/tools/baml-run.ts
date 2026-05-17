@@ -67,10 +67,10 @@ export function createBamlRunTool(
           ...(model !== undefined && { modelOverride: model }),
         });
 
-        const result = await executor.call(entry.name, functionArgs);
+        const callResult = await executor.call(entry.name, functionArgs);
         return {
-          content: [{ type: "text", text: JSON.stringify(result) }],
-          details: undefined,
+          content: [{ type: "text", text: JSON.stringify(callResult.parsed) }],
+          details: { metadata: callResult.metadata },
         };
       } catch (err) {
         if (err instanceof Error && "bamlError" in err) {

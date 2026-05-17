@@ -47,7 +47,16 @@ describe("baml_run tool", () => {
 
   function createMockExecutorFactory(result: unknown) {
     const mockExecutor: BamlExecutor = {
-      call: vi.fn().mockResolvedValue(result),
+      call: vi.fn().mockResolvedValue({
+        parsed: result,
+        metadata: {
+          inputTokens: 100,
+          outputTokens: 50,
+          cachedInputTokens: null,
+          durationMs: 1200,
+          model: "PiClient",
+        },
+      }),
       dispose: vi.fn(),
     };
     return vi.fn().mockReturnValue(mockExecutor);
