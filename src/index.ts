@@ -19,13 +19,7 @@ import {
 import type { BamlError } from "./lib/types.js";
 import type { ToolContext, ToolResult } from "./tools/types.js";
 
-/**
- * Create a Text component for tool rendering.
- *
- * Uses dynamic import of @earendil-works/pi-tui with caching.
- * Falls back to a minimal component satisfying Pi's Component interface
- * when the TUI package isn't available (e.g. in unit tests).
- */
+/** Text component constructor type for tool rendering. */
 type TextConstructor = new (text: string, px: number, py: number) => unknown;
 let textClassPromise: Promise<TextConstructor | null> | undefined;
 
@@ -38,31 +32,21 @@ function getTextClass(): Promise<TextConstructor | null> {
   return textClassPromise;
 }
 
-// Eagerly start resolution so it's ready by the time renderCall is invoked
 let resolvedTextClass: TextConstructor | null | undefined;
 getTextClass().then((cls) => { resolvedTextClass = cls; });
 
 function createTextComponent(text: string): unknown {
-  // Use pre-resolved class if available (synchronous fast path)
   if (resolvedTextClass) {
     return new resolvedTextClass(text, 0, 0);
   }
-
-  // Fallback: minimal component matching Pi's Component.render interface
-  return {
-    render(_width: number) {
-      return text.split("\n");
-    },
-  };
+  return { render(_width: number) { return text.split("\n"); } };
 }
 
-/** Options for testing — allows injecting failure state. */
+/** Options for testing. */
 export interface ExtensionOptions {
   bamlAvailable?: boolean;
   loadError?: string;
-  /** Override settings (for testing). When provided, skips disk read. */
   settings?: unknown;
-  /** Override cwd for discovery (for testing). Defaults to process.cwd(). */
   cwd?: string;
 }
 
@@ -82,13 +66,8 @@ interface PiExtensionAPI {
   on(event: string, handler: (...args: unknown[]) => unknown): void;
 }
 
-/** Path to Pi's global settings.json */
 const GLOBAL_SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
 
-/**
- * Read Pi's settings.json from disk.
- * Returns {} on any error (missing file, invalid JSON, permissions).
- */
 function readSettingsFromDisk(): unknown {
   try {
     return JSON.parse(readFileSync(GLOBAL_SETTINGS_PATH, "utf-8"));
@@ -100,110 +79,87 @@ function readSettingsFromDisk(): unknown {
 /**
  * pi-baml extension factory.
  *
- * Called during Pi's extension loading phase.
- * Emits "pi-baml:ready" on EventBus (ADR-004).
  * Registers baml_list, baml_run, baml_exec tools.
- * Captures ModelRegistry on session_start (ADR-007).
+ * Emits "pi-baml:ready" on EventBus.
+ * Captures ModelRegistry on session_start.
  */
 export function createPiBamlExtension(
   pi: PiExtensionAPI,
   options?: ExtensionOptions,
 ): void {
-  // Suppress BAML's built-in INFO logging (prints prompts/responses to stdout)
+  // Suppress BAML's INFO logging
   try {
-    // Dynamic import avoids hard failure when @boundaryml/baml isn't available
     import("@boundaryml/baml").then(({ setLogLevel }) => {
       setLogLevel("warn");
-    }).catch(() => { /* BAML unavailable */ });
+    }).catch(() => {});
   } catch { /* ignore */ }
 
-  // Determine BAML availability
   const bamlAvailable = options?.bamlAvailable ?? true;
   const loadError = options?.loadError;
 
-  // Read settings from disk (pi.settings does not exist in Pi's extension API)
+  // Parse settings
   const rawSettings = options?.settings !== undefined ? options.settings : readSettingsFromDisk();
-  const settings = parseBamlSettings(rawSettings);
+  let settings;
+  try {
+    settings = parseBamlSettings(rawSettings);
+  } catch (err) {
+    // Emit unavailable library if settings are broken
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const lib = createPiBamlLibrary({ available: false, loadError: errMsg, settings: { models: { light: "", standard: "", heavy: "" } } });
+    pi.events.emit("pi-baml:ready", lib);
+    return;
+  }
 
-  // Create the library (emitted on EventBus)
   const lib: PiBamlLibraryInternal = createPiBamlLibrary({
     available: bamlAvailable,
     ...(loadError !== undefined && { loadError }),
     settings,
   });
 
-  // Discover functions from standard directories
+  // Discover functions
   const cwd = options?.cwd ?? process.cwd();
   const discoveredGroups = discoverBamlGroups(cwd, settings.functionsDirs);
   const registry = FunctionsRegistry.fromGroups(discoveredGroups);
   lib.setRegistry(registry);
 
-  // Emit library on EventBus (factory phase — ADR-004)
+  // Emit on EventBus
   pi.events.emit("pi-baml:ready", lib);
 
-  // Create executor factory for tools
+  // Executor factory
   function toolExecutorFactory(input: {
     files: Record<string, string>;
-    clientRef: string;
-    apiKey: string;
-    defaultModel?: string;
-    modelOverride?: string;
+    clientRegistry: import("@boundaryml/baml").ClientRegistry;
+    syntheticProvider?: string;
   }) {
     if (!bamlAvailable) {
       throw Object.assign(
         new Error(`pi-baml: BAML runtime unavailable: ${loadError ?? "unknown"}`),
-        {
-          bamlError: {
-            error: `pi-baml: BAML runtime unavailable: ${loadError ?? "unknown"}`,
-            type: "unavailable" as const,
-          } satisfies BamlError,
-        },
+        { bamlError: { error: `pi-baml: BAML runtime unavailable: ${loadError ?? "unknown"}`, type: "unavailable" as const } satisfies BamlError },
       );
     }
-
     return createBamlExecutor({
       files: input.files,
-      proxy: settings.proxy,
-      apiKey: input.apiKey,
-      clientRef: input.clientRef,
-      ...(input.defaultModel !== undefined && { defaultModel: input.defaultModel }),
-      ...(input.modelOverride !== undefined && { modelOverride: input.modelOverride }),
+      clientRegistry: input.clientRegistry,
+      ...(input.syntheticProvider !== undefined && { syntheticProvider: input.syntheticProvider }),
     });
   }
 
-  /**
-   * Extract ToolContext from Pi's execute arguments.
-   *
-   * Pi calls: execute(toolCallId, params, signal, onUpdate, ctx)
-   * Our registerTool passes these through as rest args.
-   * ctx is the 5th argument (index 4).
-   */
   function extractToolContext(piArgs: unknown[]): ToolContext | undefined {
-    // Pi's ToolDefinition.execute signature:
-    // execute(toolCallId: string, params, signal, onUpdate, ctx: ExtensionContext)
-    // The ctx is the 5th positional argument
     const ctx = piArgs[4] as Record<string, unknown> | undefined;
     if (!ctx) return undefined;
-
-    const model = ctx["model"] as { id: string; provider: string; api: string; baseUrl: string } | undefined;
     const modelRegistry = ctx["modelRegistry"] as ToolContext["modelRegistry"] | undefined;
-
-    return { model, modelRegistry };
+    return { modelRegistry };
   }
 
   // Register tools
   const listTool = createBamlListTool(registry);
   pi.registerTool({
     name: "baml_list",
-    description:
-      "List available BAML functions from the registry. Use before baml_run to discover function names and signatures.",
+    description: "List available BAML functions from the registry. Use before baml_run to discover function names and signatures.",
     parameters: {
       type: "object",
       properties: {
-        group: {
-          type: "string",
-          description: "Filter by group name (optional)",
-        },
+        group: { type: "string", description: "Filter by group name (optional)" },
       },
     },
     execute: (...piArgs: unknown[]) => {
@@ -212,8 +168,7 @@ export function createPiBamlExtension(
     },
     renderCall(args: unknown, theme: unknown) {
       const t = theme as { fg(c: string, s: string): string; bold(s: string): string };
-      const a = (args ?? {}) as Record<string, unknown>;
-      return createTextComponent(renderBamlListCall(a, t));
+      return createTextComponent(renderBamlListCall((args ?? {}) as Record<string, unknown>, t));
     },
     renderResult(result: unknown, options: unknown, theme: unknown) {
       const t = theme as { fg(c: string, s: string): string; bold(s: string): string };
@@ -226,23 +181,13 @@ export function createPiBamlExtension(
   const runTool = createBamlRunTool(registry, toolExecutorFactory, settings);
   pi.registerTool({
     name: "baml_run",
-    description:
-      "Execute a pre-defined BAML function by name from the registry. Returns typed structured output.",
+    description: "Execute a pre-defined BAML function by name from the registry. Returns typed structured output.",
     parameters: {
       type: "object",
       properties: {
-        function: {
-          type: "string",
-          description: "Function name (or group/name if ambiguous)",
-        },
-        args: {
-          type: "object",
-          description: "Function arguments as key-value pairs",
-        },
-        model: {
-          type: "string",
-          description: "Optional model override (e.g. 'anthropic/claude-4.5-sonnet')",
-        },
+        function: { type: "string", description: "Function name (or group/name if ambiguous)" },
+        args: { type: "object", description: "Function arguments as key-value pairs" },
+        model: { type: "string", description: "Optional model override (e.g. 'anthropic/claude-4.5-sonnet')" },
       },
       required: ["function", "args"],
     },
@@ -253,8 +198,7 @@ export function createPiBamlExtension(
     },
     renderCall(args: unknown, theme: unknown) {
       const t = theme as { fg(c: string, s: string): string; bold(s: string): string };
-      const a = (args ?? {}) as Record<string, unknown>;
-      return createTextComponent(renderBamlRunCall(a, t));
+      return createTextComponent(renderBamlRunCall((args ?? {}) as Record<string, unknown>, t));
     },
     renderResult(result: unknown, options: unknown, theme: unknown) {
       const t = theme as { fg(c: string, s: string): string; bold(s: string): string };
@@ -267,31 +211,14 @@ export function createPiBamlExtension(
   const execTool = createBamlExecTool(settings, toolExecutorFactory);
   pi.registerTool({
     name: "baml_exec",
-    description:
-      "Compile and execute inline BAML code. Use for dynamic structured extraction/classification. Always use 'client PiClient' in your code.",
+    description: "Compile and execute inline BAML code. Use for dynamic structured extraction/classification. Always use 'client PiClient' in your code.",
     parameters: {
       type: "object",
       properties: {
-        code: {
-          type: "string",
-          description: "BAML source code defining at least one function",
-        },
-        function: {
-          type: "string",
-          description: "Function name to call from the provided code",
-        },
-        args: {
-          type: "object",
-          description: "Function arguments as key-value pairs",
-        },
-        provider: {
-          type: "string",
-          description: "BAML provider name override (e.g. 'openai')",
-        },
-        model: {
-          type: "string",
-          description: "Model override (e.g. 'gpt-4o')",
-        },
+        code: { type: "string", description: "BAML source code defining at least one function" },
+        function: { type: "string", description: "Function name to call from the provided code" },
+        args: { type: "object", description: "Function arguments as key-value pairs" },
+        model: { type: "string", description: "Model tier override: 'light', 'standard', or 'heavy' (default: standard)" },
       },
       required: ["code", "function", "args"],
     },
@@ -302,8 +229,7 @@ export function createPiBamlExtension(
     },
     renderCall(args: unknown, theme: unknown) {
       const t = theme as { fg(c: string, s: string): string; bold(s: string): string };
-      const a = (args ?? {}) as Record<string, unknown>;
-      return createTextComponent(renderBamlExecCall(a, t));
+      return createTextComponent(renderBamlExecCall((args ?? {}) as Record<string, unknown>, t));
     },
     renderResult(result: unknown, options: unknown, theme: unknown) {
       const t = theme as { fg(c: string, s: string): string; bold(s: string): string };
@@ -313,19 +239,13 @@ export function createPiBamlExtension(
     },
   });
 
-  // session_start: capture ModelRegistry, compile registry functions
+  // session_start: capture ModelRegistry
   pi.on("session_start", async (_event: unknown, ctx: unknown) => {
-    const context = ctx as {
-      modelRegistry?: {
-        getApiKeyForProvider(name: string): Promise<string>;
-      };
-    };
-
+    const context = ctx as { modelRegistry?: import("./lib/bridge.js").ModelRegistry };
     if (context.modelRegistry) {
       lib.setModelRegistry(context.modelRegistry);
     }
   });
 }
 
-// Default export for Pi's extension loader
 export default createPiBamlExtension;

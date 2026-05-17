@@ -6,6 +6,16 @@ import { join } from "node:path";
 
 const EXAMPLES_DIR = join(import.meta.dirname, "../../examples");
 
+/** Synthetic PiClient block to satisfy BAML compiler for files using client PiClient. */
+const SYNTHETIC_CLIENT = `client PiClient {
+  provider anthropic
+  options {
+    model "placeholder"
+    api_key "placeholder"
+  }
+}
+`;
+
 describe("full tool integration", () => {
   it("registry discovers and parses real example files", () => {
     const groups: Record<string, Record<string, string>> = {};
@@ -49,8 +59,8 @@ describe("full tool integration", () => {
         files[file] = readFileSync(join(groupPath, file), "utf-8");
       }
 
-      // Should compile without error
-      const runtime = BamlRuntime.fromFiles("/", files, {});
+      // Should compile without error (with synthetic PiClient)
+      const runtime = BamlRuntime.fromFiles("/", { ...files, "__pi_client.baml": SYNTHETIC_CLIENT }, {});
       expect(runtime).toBeDefined();
     }
   });
@@ -65,13 +75,14 @@ describe("full tool integration", () => {
     expect(declarations).toHaveLength(1);
     expect(declarations[0]!.name).toBe("ClassifyIntent");
 
-    // Should also compile
-    const runtime = BamlRuntime.fromFiles("/", { "main.baml": source }, {});
+    // Should also compile (with synthetic PiClient)
+    const runtime = BamlRuntime.fromFiles("/", { "main.baml": source, "__pi_client.baml": SYNTHETIC_CLIENT }, {});
     expect(runtime).toBeDefined();
   });
 
   it("createBamlExecutor injects synthetic PiClient so compilation succeeds", async () => {
     const { createBamlExecutor } = await import("../../src/lib/executor.js");
+    const { ClientRegistry } = await import("@boundaryml/baml");
 
     // This code references 'client PiClient' — would fail without synthetic injection
     const code = `
@@ -89,13 +100,19 @@ function Analyze(text: string) -> Sentiment {
 }
 `;
 
+    const cr = new ClientRegistry();
+    cr.addLlmClient("PiClient", "anthropic", {
+      model: "claude-4.5-haiku",
+      api_key: "test-key",
+      base_url: "http://localhost:9999",
+    });
+    cr.setPrimary("PiClient");
+
     // Should NOT throw — the synthetic PiClient block satisfies the compiler
     const executor = createBamlExecutor({
       files: { "dynamic.baml": code },
-      proxy: { anthropic: { provider: "test", base_url: "http://localhost:9999" } },
-      apiKey: "test-key",
-      clientRef: "PiClient",
-      defaultModel: "anthropic/claude-4.5-haiku",
+      clientRegistry: cr,
+      syntheticProvider: "anthropic",
     });
 
     expect(executor).toBeDefined();

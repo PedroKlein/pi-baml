@@ -56,18 +56,15 @@
 All shared TypeScript types. No logic. Exported for consumers who want type safety.
 
 Key types:
-- `ProxyEntry` — single proxy mapping (Pi provider name + optional base_url)
-- `ProxyConfig` — `Readonly<Record<string, ProxyEntry>>`
-- `ExtensionConfig` — per-extension provider + model pair
-- `BamlSettings` — full parsed config (proxy, defaultModel?, extensions?, functionsDirs?)
-- `PiBamlConfig` — per-call config (provider? + model?)
-- `BamlExecutor` — interface: `call<T>(fn, args) → Promise<T>`, `dispose() → void`
+- `ModelTier` — `"light" | "standard" | "heavy"`
+- `BamlSettings` — `{ models: Record<ModelTier, string>; functionsDirs?: string[] }`
+- `BamlExecutor` — interface: `call<T>(fn, args) → Promise<BamlCallResult<T>>`, `dispose() → void`
+- `BamlCallResult<T>` — `{ parsed: T; metadata: BamlCallMetadata }`
+- `BamlCallMetadata` — token usage, duration, model info
 - `FunctionEntry` — internal function metadata (name, group, files, inputTypes, outputType)
 - `FunctionInfo` — public function info (adds qualifiedName)
 - `BamlErrorType` — `"compilation" | "execution" | "configuration" | "unavailable"`
 - `BamlError` — structured error (error, type, rawOutput?, diagnostics?)
-- `PiBamlLibrary` — full EventBus API shape
-- `PiBamlExtensionAPI` — subset for `forExtension()`
 
 ### `src/lib/config.ts`
 Parses Pi's `settings.json` and extracts the `baml` configuration section.
@@ -79,50 +76,54 @@ function parseBamlSettings(settings: unknown): BamlSettings;
 
 ```typescript
 interface BamlSettings {
-  readonly proxy: ProxyConfig;                              // "anthropic" → { provider: "hai-proxy", base_url?: "..." }
-  readonly defaultModel?: string;                           // "anthropic/claude-4.5-haiku"
-  readonly extensions?: Record<string, ExtensionConfig>;    // per-extension overrides
-  readonly functionsDirs?: string[];                        // additional discovery dirs
+  readonly models: Record<ModelTier, string>;  // "light" → "github-copilot/claude-haiku-4.5"
+  readonly functionsDirs?: string[];           // additional discovery dirs
 }
 ```
 
 Fallback behavior:
-- No `baml` key or null settings → empty proxy, no default model (not an error)
-- Missing `proxy` entries → functions using that provider will fail with clear error
-- Missing `defaultModel` → `baml_exec` requires explicit model param
-- Malformed proxy entry (missing `provider`) → throws with actionable message
+- No `baml` key or null settings → throws (models are required)
+- Missing any tier → throws with actionable message
+- Invalid format (not "provider/model-id") → throws
 
 ### `src/lib/bridge.ts`
-The core integration logic. Creates configuration for BAML `ClientRegistry` instances.
+The single authority for model tier resolution and ClientRegistry assembly.
 
-Three exported functions:
+Exported functions:
 
 ```typescript
-// Static lookup: BAML provider → Pi API type
-function mapBamlProviderToPiApi(bamlProvider: string): string;
+// Map Pi API type → BAML provider name (throws for unsupported APIs)
+function mapPiApiToBamlProvider(piApi: string): string;
 
-// Parse "provider/model" format
-function parseClientRef(ref: string): { provider: string; model: string | undefined };
-
-// Pure function: produces params for ClientRegistry.addLlmClient()
-function createClientRegistryConfig(input: CreateClientConfigInput): ClientRegistryEntry;
+// Resolve a model tier to a ready-to-use ClientRegistry
+async function resolveModelTier(
+  settings: BamlSettings,
+  modelRegistry: ModelRegistry,
+  tier: ModelTier = "standard",
+): Promise<ResolvedModel>;
 ```
 
-Two modes:
-1. **Proxy mode** (file-based functions): The .baml file declares `client "anthropic/claude-4.5-haiku"`. Bridge creates a ClientRegistryEntry with `base_url` and `api_key` from Pi's proxy config.
-
-2. **PiClient mode** (dynamic functions): Agent code uses `client PiClient`. Bridge creates a "PiClient" entry using `defaultModel` from settings (parsed into provider + model ID).
+`resolveModelTier` is the core function:
+1. Parse `settings.models[tier]` → extract provider + modelId
+2. `modelRegistry.find(provider, modelId)` → Model object (with api, baseUrl, headers)
+3. `modelRegistry.getApiKeyAndHeaders(model)` → auth (apiKey + headers)
+4. `mapPiApiToBamlProvider(model.api)` → BAML provider name
+5. Build `ClientRegistry` with provider-specific auth handling:
+   - **GitHub Copilot + anthropic**: Bearer token in headers, dummy api_key
+   - **GitHub Copilot + openai-generic**: Real token as api_key (native Bearer)
+   - **Standard providers**: api_key passed directly
+6. Inject Copilot-specific headers when `provider === "github-copilot"`
 
 Provider type resolution:
 
-| BAML Provider | Pi API Type |
-|---------------|-------------|
-| `anthropic` | `anthropic-messages` |
-| `openai` | `openai-completions` |
-| `openai-generic` | `openai-completions` |
-| `google-ai` | `google-generative-ai` |
-| `vertex-ai` | `google-vertex` |
-| `aws-bedrock` | `bedrock-converse-stream` |
+| Pi API Type | BAML Provider | Notes |
+|-------------|---------------|-------|
+| `anthropic-messages` | `anthropic` | Copilot: Bearer in headers |
+| `openai-completions` | `openai-generic` | Copilot: Bearer via api_key |
+| `google-generative-ai` | `google-ai` | |
+| `google-vertex` | `vertex-ai` | |
+| `bedrock-converse-stream` | `aws-bedrock` | |
+| `openai-responses` | — | ❌ Throws error (BAML 0.85.0 limitation) |
 
 ### `src/lib/executor.ts`
 Wraps `BamlRuntime` with Pi-specific lifecycle:
@@ -131,19 +132,24 @@ Wraps `BamlRuntime` with Pi-specific lifecycle:
 function createBamlExecutor(input: CreateExecutorInput): BamlExecutor;
 ```
 
+Input takes pre-built `ClientRegistry` — executor has zero model logic:
+
+```typescript
+interface CreateExecutorInput {
+  readonly files: Record<string, string>;
+  readonly clientRegistry: ClientRegistry;     // pre-built by bridge
+  readonly syntheticProvider?: string;         // for the compiler placeholder
+}
+```
+
 Implementation (closure-based, not class):
 
 ```typescript
-// Compiles runtime
-const runtime = BamlRuntime.fromFiles("/", files, {});
+// Compiles runtime (with synthetic PiClient block for compiler)
+const runtime = BamlRuntime.fromFiles("/", compilationFiles, {});
 const ctx = runtime.createContextManager();
 
-// Builds ClientRegistry from bridge config
-const clientRegistry = new ClientRegistry();
-clientRegistry.addLlmClient(config.name, config.provider, config.options);
-clientRegistry.setPrimary(config.name);
-
-// call() implementation
+// call() uses the pre-built clientRegistry directly
 async function call<T>(functionName: string, args: Record<string, unknown>): Promise<T> {
   const collector = new Collector();
   const result = await runtime.callFunction(
@@ -267,6 +273,31 @@ Factory phase (synchronous):
 Session_start phase (async):
 1. Capture `ctx.modelRegistry` via `lib.setModelRegistry()`
 
+## Model Resolution
+
+All model decisions are centralized in `bridge.ts`. The tier system is simple:
+
+```
+baml_run/baml_exec → tier param (default: "standard") → settings.models[tier] → resolveModelTier()
+```
+
+`resolveModelTier()` does everything:
+1. Parse "provider/model-id" from settings
+2. Look up model in Pi's ModelRegistry
+3. Get auth credentials
+4. Map Pi API type → BAML provider
+5. Build ClientRegistry with provider-specific auth (Copilot workarounds, etc.)
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│  bridge.resolveModelTier(settings, modelRegistry, tier)           │
+│    → { clientRegistry, bamlProvider }                             │
+│                                                                   │
+│  executor receives pre-built ClientRegistry (zero model logic)    │
+│  tools are thin callers (zero model logic)                        │
+└───────────────────────────────────────────────────────────────────┘
+```
+
 ## Caching Strategy
 
 ```
@@ -284,6 +315,7 @@ Session lifetime cache:
 - Registry functions compiled on first call, cached for session
 - Dynamic code (`baml_exec`) compiled per-call, disposed after use
 - `baml_run` with same function reuses cached executor
+- Model override bypasses cache (creates fresh executor, disposed after use)
 
 ## Error Handling
 

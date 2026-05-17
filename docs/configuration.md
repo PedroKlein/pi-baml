@@ -7,129 +7,130 @@ Add the `baml` key to your Pi `settings.json` (`~/.pi/agent/settings.json`):
 ```json
 {
   "baml": {
-    "proxy": {
-      "anthropic": {
-        "provider": "hai-proxy",
-        "base_url": "http://localhost:6655/anthropic"
-      },
-      "openai": {
-        "provider": "github-copilot"
-      }
-    },
-    "defaultModel": "anthropic/claude-4.5-haiku",
-    "extensions": {
-      "pi-memory": {
-        "provider": "anthropic",
-        "model": "claude-4.5-haiku"
-      }
-    },
-    "functionsDirs": [
-      "~/my-custom-baml-dir"
-    ]
+    "models": {
+      "light": "github-copilot/claude-haiku-4.5",
+      "standard": "github-copilot/claude-sonnet-4.6",
+      "heavy": "hai-proxy/anthropic--claude-4.6-opus"
+    }
   }
 }
 ```
 
 ## Fields
 
-### `proxy` (required for function execution)
+### `models` (required)
 
-Maps BAML provider names to Pi provider configurations.
+Maps model tiers to Pi provider/model-id pairs. All three tiers are required.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `provider` | string | Yes | Pi provider name (from `models.json`) |
-| `base_url` | string | No | Override base URL. If omitted, no base_url is set in the ClientRegistry (BAML uses the provider's default). |
+| Tier | Purpose | Typical Model |
+|------|---------|---------------|
+| `light` | Fast, cheap tasks: simple extraction, classification | haiku-class |
+| `standard` | Most tasks: structured extraction, multi-field output | sonnet-class |
+| `heavy` | Complex reasoning, ambiguous inputs, multi-step logic | opus-class |
 
-**Keys** are BAML provider names: `anthropic`, `openai`, `openai-generic`, `google-ai`, `vertex-ai`, `aws-bedrock`.
+**Format:** `"provider/model-id"` where:
+- `provider` = Pi provider name (from `pi --list-models`, e.g. `github-copilot`, `anthropic`, `hai-proxy`)
+- `model-id` = Model ID as shown in Pi's model list
 
-**Example:** If your Pi has `hai-proxy` configured at `http://localhost:6655/anthropic` with the Anthropic Messages API, set:
+**Examples:**
 ```json
-"proxy": { "anthropic": { "provider": "hai-proxy", "base_url": "http://localhost:6655/anthropic" } }
-```
-
-### `defaultModel` (recommended)
-
-The model used by `baml_exec` when the agent writes dynamic BAML with `client PiClient`.
-
-Format: `"<baml-provider>/<model-id>"` — e.g., `"anthropic/claude-4.5-haiku"`.
-
-If omitted, `baml_exec` requires an explicit `model` parameter on every call.
-
-### `extensions` (optional)
-
-Per-extension configuration for the `forExtension(name)` API.
-
-```json
-"extensions": {
-  "<extension-name>": {
-    "provider": "<baml-provider>",
-    "model": "<model-id>"
-  }
+"models": {
+  "light": "github-copilot/claude-haiku-4.5",
+  "standard": "github-copilot/claude-sonnet-4.6",
+  "heavy": "hai-proxy/anthropic--claude-4.6-opus"
 }
 ```
 
-Extensions that call `baml.forExtension("pi-memory")` get an executor factory pre-configured with these settings.
+```json
+"models": {
+  "light": "anthropic/claude-haiku-4-5",
+  "standard": "anthropic/claude-sonnet-4-20250514",
+  "heavy": "anthropic/claude-opus-4-20250901"
+}
+```
+
+### Supported API Types
+
+The model's Pi API type determines which BAML provider is used:
+
+| Pi API Type | BAML Provider | Status |
+|-------------|---------------|--------|
+| `anthropic-messages` | `anthropic` | ✅ Supported |
+| `openai-completions` | `openai-generic` | ✅ Supported |
+| `google-generative-ai` | `google-ai` | ✅ Supported |
+| `google-vertex` | `vertex-ai` | ✅ Supported |
+| `bedrock-converse-stream` | `aws-bedrock` | ✅ Supported |
+| `openai-responses` | — | ❌ Not supported (BAML 0.85.0 limitation) |
+
+Models using `openai-responses` (e.g., `github-copilot/gpt-5.4-mini`) will produce a clear error at call time.
+
+### Provider-Specific Notes
+
+#### GitHub Copilot (`github-copilot/*`)
+
+GitHub Copilot models require special auth handling (see [ADR-013](adr/013-github-copilot-auth-workaround.md)):
+- Auth: Bearer token injected via headers (BAML's `x-api-key` is overridden)
+- Required headers: `X-Initiator`, `Openai-Intent`, `anthropic-dangerous-direct-browser-access`, `accept`
+- These are injected automatically by the bridge — no user configuration needed
+
+#### Custom Proxies (e.g., `hai-proxy/*`)
+
+Custom providers defined in `~/.pi/agent/models.json` work natively as long as they use `anthropic-messages` or `openai-completions` API type. The `api_key` and `base_url` are resolved from Pi's ModelRegistry.
 
 ### `functionsDirs` (optional)
 
 Additional directories to scan for `.baml` function files. Added to the default discovery paths.
 
 Default discovery (always active):
-1. `<cwd>/.pi/baml/` — project-specific (highest priority)
-2. `~/.pi/baml/` — Pi-local
-3. `~/.agents/baml/` — shared across agents
+1. `<cwd>/.agents/baml/` — project-specific (highest priority)
+2. `<cwd>/.pi/baml/` — project Pi-local
+3. `~/.pi/baml/` — user Pi-local
+4. `~/.agents/baml/` — shared across agents
 
-## Functions Directory Structure
+## Tool Usage
 
-Each subdirectory is a **compilation unit** — all `.baml` files within are compiled together and share types.
+### Model Selection
+
+Both `baml_run` and `baml_exec` accept an optional `model` parameter:
 
 ```
-~/.agents/baml/
-├── extraction/              ← group name: "extraction"
-│   ├── main.baml           ← defines ExtractActionItems, ExtractEntities
-│   └── types.baml          ← shared types used by both functions
-├── classification/          ← group name: "classification"
-│   └── main.baml           ← defines ClassifyIntent, ClassifySentiment
-└── transformation/          ← group name: "transformation"
-    └── main.baml           ← defines Summarize
+model: "light" | "standard" | "heavy"   (default: "standard")
 ```
 
-Functions are referenced by:
-- **Short name:** `"ExtractActionItems"` (if unambiguous across all groups)
-- **Qualified name:** `"extraction/ExtractActionItems"` (always works)
+The agent picks a tier based on task complexity:
+- **light** — trivial extraction, yes/no classification, formatting
+- **standard** — most structured output tasks (default)
+- **heavy** — complex multi-step reasoning, ambiguous inputs
+
+### baml_exec
+
+```json
+{ "code": "...", "function": "MyFunc", "args": {...}, "model": "light" }
+```
+
+Always use `client PiClient` in dynamic BAML code.
+
+### baml_run
+
+```json
+{ "function": "ExtractTodos", "args": {...}, "model": "heavy" }
+```
 
 ## .baml File Conventions
 
-### For registry functions (files on disk)
-
-Declare your client using standard BAML syntax. pi-baml's proxy config routes it:
+All `.baml` files should use `client PiClient`:
 
 ```baml
-function MyFunction(input: string) -> MyOutput {
-  client "anthropic/claude-4.5-haiku"
-  prompt #"..."#
-}
-```
-
-The `"anthropic/..."` tells pi-baml to look up the `anthropic` proxy entry and route through that Pi provider.
-
-### For dynamic code (baml_exec)
-
-Always use `client PiClient`:
-
-```baml
-function MyDynamicFunction(input: string) -> MyOutput {
+function ExtractTodos(notes: string) -> TodoItem[] {
   client PiClient
   prompt #"..."#
 }
 ```
 
-`PiClient` is resolved from `baml.defaultModel` in settings or the `model` tool parameter.
+The model tier is selected at call time, not in the file.
 
 ## Environment Variables
 
 | Variable | Purpose |
 |----------|---------|
-| `PI_BAML_TEST_PROXY_URL` | Base URL for integration tests (e.g., `http://localhost:6655`) |
-| `PI_BAML_LOG_LEVEL` | Logging verbosity: `debug`, `info`, `warn`, `error` (default: `warn`) |
+| `PI_BAML_TEST_PROXY_URL` | Base URL for integration tests |

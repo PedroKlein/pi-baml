@@ -1,135 +1,123 @@
-import type { ProxyConfig } from "./types.js";
+import { ClientRegistry } from "@boundaryml/baml";
+import type { BamlSettings, ModelTier } from "./types.js";
 
-/** Maps BAML provider names to Pi's API type identifiers. */
-const PROVIDER_MAP: Readonly<Record<string, string>> = {
-  anthropic: "anthropic-messages",
-  openai: "openai-completions",
-  "openai-generic": "openai-completions",
-  "google-ai": "google-generative-ai",
-  "vertex-ai": "google-vertex",
-  "aws-bedrock": "bedrock-converse-stream",
+/**
+ * Minimal ModelRegistry interface — only what we need from Pi.
+ */
+export interface ModelRegistry {
+  find(provider: string, modelId: string): {
+    id: string;
+    provider: string;
+    api: string;
+    baseUrl: string;
+    headers?: Record<string, string>;
+    [key: string]: unknown;
+  } | undefined;
+  getApiKeyAndHeaders(model: { provider: string; [key: string]: unknown }): Promise<
+    { ok: true; apiKey?: string; headers?: Record<string, string> } |
+    { ok: false; error: string }
+  >;
+}
+
+/** Result of resolving a model tier — everything needed for BAML. */
+export interface ResolvedModel {
+  readonly clientRegistry: ClientRegistry;
+  readonly bamlProvider: string;
+}
+
+/** Map Pi API type → BAML provider name. */
+/** Pi API types that BAML 0.85.0 cannot support. */
+const UNSUPPORTED_PI_APIS = new Set(["openai-responses"]);
+
+const PI_API_TO_BAML_PROVIDER: Readonly<Record<string, string>> = {
+  "anthropic-messages": "anthropic",
+  "openai-completions": "openai-generic",
+  "openai-responses": "openai-generic", // posts to /chat/completions — only works if proxy accepts both
+  "google-generative-ai": "google-ai",
+  "google-vertex": "vertex-ai",
+  "bedrock-converse-stream": "aws-bedrock",
 };
 
-/**
- * Map a BAML provider name to the Pi API type.
- *
- * Returns the input unchanged for unknown providers —
- * they may be custom providers that match directly.
- */
-export function mapBamlProviderToPiApi(bamlProvider: string): string {
-  return PROVIDER_MAP[bamlProvider] ?? bamlProvider;
-}
-
-/** Parsed client reference: "provider/model" or just "clientName". */
-export interface ParsedClientRef {
-  readonly provider: string;
-  readonly model: string | undefined;
-}
-
-/**
- * Parse a BAML client reference into provider and model parts.
- *
- * Format: "provider/model-name" → { provider: "provider", model: "model-name" }
- * Plain name: "PiClient" → { provider: "PiClient", model: undefined }
- */
-export function parseClientRef(ref: string): ParsedClientRef {
-  const slashIndex = ref.indexOf("/");
-  if (slashIndex === -1) {
-    return { provider: ref, model: undefined };
-  }
-  return {
-    provider: ref.slice(0, slashIndex),
-    model: ref.slice(slashIndex + 1),
-  };
-}
-
-/** Configuration needed to call ClientRegistry.addLlmClient(). */
-export interface ClientRegistryEntry {
-  readonly name: string;
-  readonly provider: string;
-  readonly options: Record<string, string>;
-}
-
-/** Input parameters for createClientRegistryConfig. */
-export interface CreateClientConfigInput {
-  /** The client reference from the .baml file (e.g. "anthropic/claude-4.5-haiku" or "PiClient") */
-  readonly clientRef: string;
-  /** Proxy configuration from settings */
-  readonly proxy: ProxyConfig;
-  /** API key resolved from Pi's ModelRegistry */
-  readonly apiKey: string;
-  /** Default model for PiClient resolution (e.g. "anthropic/claude-4.5-haiku") */
-  readonly defaultModel?: string;
-  /** Override model (e.g. "anthropic/claude-4.5-sonnet") */
-  readonly modelOverride?: string;
-}
-
-/**
- * Create the configuration for a BAML ClientRegistry entry.
- *
- * Pure function: takes proxy config + resolved credentials,
- * returns the data needed to call ClientRegistry.addLlmClient().
- * No side effects, no network calls.
- *
- * Two modes:
- * - Proxy mode: clientRef is "provider/model" — resolves via proxy config
- * - PiClient mode: clientRef is "PiClient" — resolves via defaultModel setting
- */
-export function createClientRegistryConfig(
-  input: CreateClientConfigInput,
-): ClientRegistryEntry {
-  const { clientRef, proxy, apiKey, defaultModel, modelOverride } = input;
-
-  // Determine effective provider and model
-  let effectiveProvider: string;
-  let effectiveModel: string | undefined;
-
-  if (clientRef === "PiClient") {
-    // PiClient mode: resolve from defaultModel
-    if (!defaultModel) {
-      throw new Error(
-        "No default model configured. Pass model param or set baml.defaultModel in settings.",
-      );
-    }
-    const parsed = parseClientRef(defaultModel);
-    effectiveProvider = parsed.provider;
-    effectiveModel = parsed.model;
-  } else if (modelOverride) {
-    // Override mode: take provider from override
-    const parsed = parseClientRef(modelOverride);
-    effectiveProvider = parsed.provider;
-    effectiveModel = parsed.model;
-  } else {
-    // Proxy mode: parse the client reference
-    const parsed = parseClientRef(clientRef);
-    effectiveProvider = parsed.provider;
-    effectiveModel = parsed.model;
-  }
-
-  // Resolve proxy entry for the provider
-  const proxyEntry = proxy[effectiveProvider];
-  if (!proxyEntry) {
+export function mapPiApiToBamlProvider(piApi: string): string {
+  if (UNSUPPORTED_PI_APIS.has(piApi)) {
     throw new Error(
-      `No proxy configured for provider "${effectiveProvider}". Add it to settings.json baml.proxy.`,
+      `Model uses "${piApi}" API which is not supported by BAML 0.85.0. ` +
+      `Choose a model that uses anthropic-messages or openai-completions instead.`,
+    );
+  }
+  return PI_API_TO_BAML_PROVIDER[piApi] ?? "openai-generic";
+}
+
+/**
+ * Resolve a model tier to a ready-to-use ClientRegistry.
+ *
+ * 1. Reads the "provider/model-id" from settings for the given tier
+ * 2. Looks up the model in Pi's ModelRegistry
+ * 3. Gets auth (apiKey + headers)
+ * 4. Builds and returns a ClientRegistry with "PiClient" as primary
+ */
+export async function resolveModelTier(
+  settings: BamlSettings,
+  modelRegistry: ModelRegistry,
+  tier: ModelTier = "standard",
+): Promise<ResolvedModel> {
+  const ref = settings.models[tier];
+  const slashIdx = ref.indexOf("/");
+  const provider = ref.slice(0, slashIdx);
+  const modelId = ref.slice(slashIdx + 1);
+
+  // Look up model in Pi's registry
+  const model = modelRegistry.find(provider, modelId);
+  if (!model) {
+    throw new Error(
+      `Model "${ref}" not found in Pi's ModelRegistry. Check baml.models.${tier} in settings.json.`,
     );
   }
 
-  // Build options
-  const options: Record<string, string> = {
-    api_key: apiKey,
-  };
-
-  if (effectiveModel) {
-    options["model"] = effectiveModel;
+  // Get auth — pass the full model object so Pi can resolve provider-specific config
+  const auth = await modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok) {
+    throw new Error(`Auth failed for "${ref}": ${auth.error}`);
   }
 
-  if (proxyEntry.base_url) {
-    options["base_url"] = proxyEntry.base_url;
+  // Determine BAML provider from the model's API type
+  const bamlProvider = mapPiApiToBamlProvider(model.api);
+
+  // Build ClientRegistry
+  const cr = new ClientRegistry();
+  const options: Record<string, unknown> = {
+    model: modelId,
+    api_key: auth.apiKey ?? "",
+  };
+  if (model.baseUrl) {
+    options["base_url"] = model.baseUrl;
+  }
+  const mergedHeaders: Record<string, string> = { ...model.headers, ...auth.headers };
+
+  // GitHub Copilot proxy requires Bearer auth and additional headers that Pi
+  // normally injects per-request (see pi-ai/providers/github-copilot-headers.js).
+  if (provider === "github-copilot") {
+    mergedHeaders["X-Initiator"] = "user";
+    mergedHeaders["Openai-Intent"] = "conversation-edits";
+    mergedHeaders["anthropic-dangerous-direct-browser-access"] = "true";
+    mergedHeaders["accept"] = "application/json";
+
+    if (bamlProvider === "anthropic") {
+      // BAML's anthropic provider sends x-api-key, but Copilot needs Authorization: Bearer.
+      // Override auth via headers; set api_key to dummy (Copilot ignores x-api-key).
+      mergedHeaders["Authorization"] = `Bearer ${auth.apiKey ?? ""}`;
+      options["api_key"] = "not-used";
+    }
+    // For openai-generic: BAML natively sends Authorization: Bearer <api_key>,
+    // so the real token stays in options.api_key (set above). No override needed.
   }
 
-  return {
-    name: clientRef,
-    provider: effectiveProvider,
-    options,
-  };
+  if (Object.keys(mergedHeaders).length > 0) {
+    options["headers"] = mergedHeaders;
+  }
+
+  cr.addLlmClient("PiClient", bamlProvider, options);
+  cr.setPrimary("PiClient");
+
+  return { clientRegistry: cr, bamlProvider };
 }

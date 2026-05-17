@@ -1,19 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createBamlExecutor } from "../../src/lib/executor.js";
-import type { ProxyConfig } from "../../src/lib/types.js";
 
 // Mock the @boundaryml/baml module at the system boundary
 const mockCallFunction = vi.fn();
 const mockCreateContextManager = vi.fn();
 const mockFromFiles = vi.fn();
+const mockAddLlmClient = vi.fn();
+const mockSetPrimary = vi.fn();
 
 vi.mock("@boundaryml/baml", () => ({
   BamlRuntime: {
     fromFiles: (...args: unknown[]) => mockFromFiles(...args),
   },
   ClientRegistry: vi.fn().mockImplementation(() => ({
-    addLlmClient: vi.fn(),
-    setPrimary: vi.fn(),
+    addLlmClient: mockAddLlmClient,
+    setPrimary: mockSetPrimary,
   })),
   Collector: vi.fn().mockImplementation(() => ({
     last: null,
@@ -38,12 +39,12 @@ describe("createBamlExecutor", () => {
     }`,
   };
 
-  const proxy: ProxyConfig = {
-    anthropic: {
-      provider: "hai-proxy",
-      base_url: "http://localhost:6655/anthropic",
-    },
-  };
+  // Pre-built ClientRegistry (mocked) — executor doesn't care about its contents
+  // The mock implementation provides addLlmClient/setPrimary
+  const mockClientRegistry = {
+    addLlmClient: vi.fn(),
+    setPrimary: vi.fn(),
+  } as unknown as import("@boundaryml/baml").ClientRegistry;
 
   const mockRuntime = {
     callFunction: mockCallFunction,
@@ -60,9 +61,7 @@ describe("createBamlExecutor", () => {
     it("compiles valid .baml files without error", () => {
       const executor = createBamlExecutor({
         files,
-        proxy,
-        apiKey: "test-key",
-        clientRef: "anthropic/claude-4.5-haiku",
+        clientRegistry: mockClientRegistry,
       });
 
       expect(executor).toBeDefined();
@@ -76,6 +75,37 @@ describe("createBamlExecutor", () => {
       );
     });
 
+    it("uses provided syntheticProvider in the placeholder block", () => {
+      createBamlExecutor({
+        files,
+        clientRegistry: mockClientRegistry,
+        syntheticProvider: "openai",
+      });
+
+      expect(mockFromFiles).toHaveBeenCalledWith(
+        "/",
+        expect.objectContaining({
+          "__pi_client.baml": expect.stringContaining("provider openai"),
+        }),
+        {},
+      );
+    });
+
+    it("defaults syntheticProvider to anthropic", () => {
+      createBamlExecutor({
+        files,
+        clientRegistry: mockClientRegistry,
+      });
+
+      expect(mockFromFiles).toHaveBeenCalledWith(
+        "/",
+        expect.objectContaining({
+          "__pi_client.baml": expect.stringContaining("provider anthropic"),
+        }),
+        {},
+      );
+    });
+
     it("throws BamlError with type=compilation on invalid syntax", () => {
       mockFromFiles.mockImplementation(() => {
         throw new Error("Expected '->' but found '{'");
@@ -84,9 +114,7 @@ describe("createBamlExecutor", () => {
       expect(() =>
         createBamlExecutor({
           files: { "bad.baml": "invalid syntax" },
-          proxy,
-          apiKey: "test-key",
-          clientRef: "anthropic/claude-4.5-haiku",
+          clientRegistry: mockClientRegistry,
         }),
       ).toThrow(/BAML compilation failed/);
     });
@@ -102,9 +130,7 @@ describe("createBamlExecutor", () => {
 
       const executor = createBamlExecutor({
         files,
-        proxy,
-        apiKey: "test-key",
-        clientRef: "anthropic/claude-4.5-haiku",
+        clientRegistry: mockClientRegistry,
       });
 
       const result = await executor.call("Extract", { text: "meeting notes" });
@@ -124,7 +150,7 @@ describe("createBamlExecutor", () => {
         { text: "meeting notes" },
         expect.anything(), // ctx
         null, // TypeBuilder
-        expect.anything(), // ClientRegistry
+        mockClientRegistry, // pre-built ClientRegistry
         expect.anything(), // Collectors
       );
     });
@@ -140,9 +166,7 @@ describe("createBamlExecutor", () => {
 
       const executor = createBamlExecutor({
         files,
-        proxy,
-        apiKey: "test-key",
-        clientRef: "anthropic/claude-4.5-haiku",
+        clientRegistry: mockClientRegistry,
       });
 
       await expect(executor.call("Extract", { text: "hi" })).rejects.toThrow(
@@ -155,9 +179,7 @@ describe("createBamlExecutor", () => {
     it("is safe to call multiple times", () => {
       const executor = createBamlExecutor({
         files,
-        proxy,
-        apiKey: "test-key",
-        clientRef: "anthropic/claude-4.5-haiku",
+        clientRegistry: mockClientRegistry,
       });
 
       expect(() => {
@@ -170,9 +192,7 @@ describe("createBamlExecutor", () => {
     it("rejects calls after dispose", async () => {
       const executor = createBamlExecutor({
         files,
-        proxy,
-        apiKey: "test-key",
-        clientRef: "anthropic/claude-4.5-haiku",
+        clientRegistry: mockClientRegistry,
       });
 
       executor.dispose();

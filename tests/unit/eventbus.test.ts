@@ -1,132 +1,98 @@
 import { describe, it, expect, vi } from "vitest";
 import { createPiBamlLibrary } from "../../src/eventbus.js";
+import { FunctionsRegistry } from "../../src/lib/registry.js";
 import type { BamlSettings } from "../../src/lib/types.js";
+import type { ModelRegistry } from "../../src/lib/bridge.js";
 
-// Mock executor creation
+// Mock BAML runtime
 vi.mock("@boundaryml/baml", () => ({
   BamlRuntime: {
     fromFiles: vi.fn().mockReturnValue({
+      createContextManager: vi.fn().mockReturnValue({}),
       callFunction: vi.fn().mockResolvedValue({
         isOk: () => true,
-        parsed: () => ({ result: "test" }),
+        parsed: () => ({ answer: "42" }),
       }),
-      createContextManager: vi.fn().mockReturnValue({}),
     }),
   },
   ClientRegistry: vi.fn().mockImplementation(() => ({
     addLlmClient: vi.fn(),
     setPrimary: vi.fn(),
   })),
-  Collector: vi.fn().mockImplementation(() => ({
-    last: null,
-    logs: [],
-  })),
+  Collector: vi.fn().mockImplementation(() => ({ last: null })),
 }));
 
-describe("createPiBamlLibrary", () => {
-  const settings: BamlSettings = {
-    proxy: {
-      anthropic: {
-        provider: "hai-proxy",
-        base_url: "http://localhost:6655/anthropic",
-      },
-    },
-    defaultModel: "anthropic/claude-4.5-haiku",
-    extensions: {
-      "pi-memory": { provider: "anthropic", model: "claude-4.5-haiku" },
-    },
+const settings: BamlSettings = {
+  models: {
+    light: "github-copilot/claude-haiku-4.5",
+    standard: "github-copilot/claude-sonnet-4.6",
+    heavy: "github-copilot/claude-opus-4.7",
+  },
+};
+
+function createMockModelRegistry(): ModelRegistry {
+  return {
+    find: vi.fn().mockReturnValue({
+      id: "claude-sonnet-4.6",
+      api: "anthropic-messages",
+      baseUrl: "https://api.individual.githubcopilot.com",
+      headers: {},
+    }),
+    getApiKeyAndHeaders: vi.fn().mockResolvedValue({
+      ok: true as const,
+      apiKey: "test-key",
+      headers: {},
+    }),
   };
+}
 
-  describe("available=true (happy path)", () => {
-    it("has available=true when BAML runtime loads", () => {
-      const lib = createPiBamlLibrary({ available: true, settings });
-      expect(lib.available).toBe(true);
-    });
-
-    it("has all library methods defined", () => {
-      const lib = createPiBamlLibrary({ available: true, settings });
-      expect(typeof lib.createExecutor).toBe("function");
-      expect(typeof lib.createExecutorFromDir).toBe("function");
-      expect(typeof lib.execBaml).toBe("function");
-      expect(typeof lib.call).toBe("function");
-      expect(typeof lib.list).toBe("function");
-      expect(typeof lib.forExtension).toBe("function");
-    });
+describe("createPiBamlLibrary", () => {
+  it("returns available=true when BAML is available", () => {
+    const lib = createPiBamlLibrary({ available: true, settings });
+    expect(lib.available).toBe(true);
   });
 
-  describe("available=false (soft-fail)", () => {
-    it("has available=false", () => {
-      const lib = createPiBamlLibrary({
-        available: false,
-        loadError: "NAPI binary not found",
-        settings,
-      });
-      expect(lib.available).toBe(false);
-    });
-
-    it("every method throws with runtime unavailable message", async () => {
-      const lib = createPiBamlLibrary({
-        available: false,
-        loadError: "NAPI binary not found",
-        settings,
-      });
-
-      await expect(lib.createExecutor({})).rejects.toThrow(
-        /BAML runtime unavailable.*NAPI binary not found/,
-      );
-      await expect(lib.createExecutorFromDir("/tmp")).rejects.toThrow(
-        /BAML runtime unavailable/,
-      );
-      await expect(lib.execBaml("code", "fn", {})).rejects.toThrow(
-        /BAML runtime unavailable/,
-      );
-      await expect(lib.call("fn", {})).rejects.toThrow(
-        /BAML runtime unavailable/,
-      );
-      expect(() => lib.list()).toThrow(/BAML runtime unavailable/);
-    });
+  it("returns available=false when BAML is unavailable", () => {
+    const lib = createPiBamlLibrary({ available: false, loadError: "native binary missing", settings });
+    expect(lib.available).toBe(false);
   });
 
-  describe("lazy ModelRegistry", () => {
-    it("throws before setModelRegistry is called", async () => {
-      const lib = createPiBamlLibrary({ available: true, settings });
-
-      await expect(
-        lib.createExecutor({ "main.baml": "content" }),
-      ).rejects.toThrow(/not initialized.*session_start/);
-    });
-
-    it("works after setModelRegistry is called", async () => {
-      const lib = createPiBamlLibrary({ available: true, settings });
-
-      const mockRegistry = {
-        getApiKeyForProvider: vi.fn().mockResolvedValue("test-api-key"),
-      };
-
-      lib.setModelRegistry(mockRegistry);
-
-      // Should not throw "not initialized" anymore
-      const executor = await lib.createExecutor({
-        "main.baml": `function Test(x: string) -> string { client "anthropic/claude-4.5-haiku" prompt #""# }`,
-      });
-      expect(executor).toBeDefined();
-    });
+  it("throws on method call when unavailable", async () => {
+    const lib = createPiBamlLibrary({ available: false, loadError: "test", settings });
+    await expect(lib.execBaml("code", "fn", {})).rejects.toThrow("unavailable");
   });
 
-  describe("forExtension", () => {
-    it("returns pre-configured factory for known extension", () => {
-      const lib = createPiBamlLibrary({ available: true, settings });
-      const api = lib.forExtension("pi-memory");
+  it("throws before session_start (no modelRegistry)", async () => {
+    const lib = createPiBamlLibrary({ available: true, settings });
+    await expect(lib.execBaml("code", "fn", {})).rejects.toThrow("not initialized");
+  });
 
-      expect(typeof api.createExecutor).toBe("function");
-      expect(typeof api.createExecutorFromDir).toBe("function");
+  it("works after setModelRegistry is called", async () => {
+    const lib = createPiBamlLibrary({ available: true, settings });
+    lib.setModelRegistry(createMockModelRegistry());
+
+    // execBaml should attempt to compile (and may fail on BAML compilation,
+    // but it should NOT throw "not initialized")
+    try {
+      await lib.execBaml("invalid baml", "fn", {});
+    } catch (err) {
+      expect((err as Error).message).not.toContain("not initialized");
+    }
+  });
+
+  it("list returns empty when no functions registered", () => {
+    const lib = createPiBamlLibrary({ available: true, settings });
+    expect(lib.list()).toEqual([]);
+  });
+
+  it("setRegistry updates the functions registry", () => {
+    const lib = createPiBamlLibrary({ available: true, settings });
+    const reg = FunctionsRegistry.fromGroups({
+      "test": { "main.baml": "function Foo(x: string) -> string { client PiClient\n  prompt #\"{{ x }}\"# }" },
     });
-
-    it("returns default config for unknown extension", () => {
-      const lib = createPiBamlLibrary({ available: true, settings });
-      const api = lib.forExtension("unknown-ext");
-
-      expect(typeof api.createExecutor).toBe("function");
-    });
+    lib.setRegistry(reg);
+    const list = lib.list();
+    expect(list.length).toBe(1);
+    expect(list[0]!.name).toBe("Foo");
   });
 });

@@ -16,7 +16,7 @@ class MeetingSummary {
 }
 
 function ExtractMeetingSummary(transcript: string) -> MeetingSummary {
-  client "anthropic/claude-4.5-haiku"
+  client PiClient
   prompt #"
     Extract a structured summary from this meeting transcript.
     Include all action items with assignees when mentioned.

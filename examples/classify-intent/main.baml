@@ -7,7 +7,7 @@ class IntentMatch {
 }
 
 function ClassifyIntent(message: string, context: string?) -> IntentMatch {
-  client "anthropic/claude-4.5-haiku"
+  client PiClient
   prompt #"
     Classify the intent of the user's message.
 

@@ -1,154 +1,150 @@
 import { describe, it, expect, vi } from "vitest";
 import { createBamlRunTool } from "../../src/tools/baml-run.js";
 import { FunctionsRegistry } from "../../src/lib/registry.js";
-import type { BamlExecutor, BamlSettings } from "../../src/lib/types.js";
-import type { ToolContext, ToolResult } from "../../src/tools/types.js";
+import type { BamlSettings } from "../../src/lib/types.js";
+import type { ToolContext } from "../../src/tools/types.js";
 
-/** Extract text content from a ToolResult for assertions. */
-function textOf(result: ToolResult): string {
-  return result.content.map((c) => c.text).join("");
+const settings: BamlSettings = {
+  models: {
+    light: "github-copilot/claude-haiku-4.5",
+    standard: "github-copilot/claude-sonnet-4.6",
+    heavy: "github-copilot/claude-opus-4.7",
+  },
+};
+
+function mockRegistry() {
+  return {
+    find: vi.fn().mockReturnValue({
+      id: "claude-sonnet-4.6",
+      api: "anthropic-messages",
+      baseUrl: "https://api.individual.githubcopilot.com",
+      headers: {},
+    }),
+    getApiKeyAndHeaders: vi.fn().mockResolvedValue({
+      ok: true as const,
+      apiKey: "test-key",
+      headers: {},
+    }),
+  };
 }
 
-/** Create a mock ToolContext with modelRegistry that resolves an API key. */
-function createMockContext(apiKey = "test-api-key"): ToolContext {
-  return {
-    model: {
-      id: "claude-4.5-haiku",
-      provider: "anthropic",
-      api: "anthropic-messages",
-      baseUrl: "http://localhost:6655/anthropic",
-    },
-    modelRegistry: {
-      getApiKeyForProvider: vi.fn().mockResolvedValue(apiKey),
-      getApiKeyAndHeaders: vi.fn().mockResolvedValue({ apiKey, headers: {} }),
-    },
-  };
+function mockExecutorFactory() {
+  return vi.fn().mockReturnValue({
+    call: vi.fn().mockResolvedValue({
+      parsed: [{ task: "do thing" }],
+      metadata: { inputTokens: 10, outputTokens: 5, cachedInputTokens: null, durationMs: 100, model: null },
+    }),
+    dispose: vi.fn(),
+  });
+}
+
+const testFiles = {
+  "main.baml": `function TestFunc(input: string) -> string {
+  client PiClient
+  prompt #"{{ input }}"#
+}`,
+};
+
+function createTestRegistry() {
+  return FunctionsRegistry.fromGroups({
+    "test-group": testFiles,
+  });
 }
 
 describe("baml_run tool", () => {
-  const settings: BamlSettings = {
-    proxy: {
-      anthropic: {
-        provider: "hai-proxy",
-        base_url: "http://localhost:6655/anthropic",
-      },
-    },
-    defaultModel: "anthropic/claude-4.5-haiku",
-  };
-
-  const registry = FunctionsRegistry.fromGroups({
-    extraction: {
-      "main.baml": `function ExtractItems(text: string) -> Item[] {
-        client "anthropic/claude-4.5-haiku"
-        prompt #"..."#
-      }`,
-    },
-  });
-
-  function createMockExecutorFactory(result: unknown) {
-    const mockExecutor: BamlExecutor = {
-      call: vi.fn().mockResolvedValue({
-        parsed: result,
-        metadata: {
-          inputTokens: 100,
-          outputTokens: 50,
-          cachedInputTokens: null,
-          durationMs: 1200,
-          model: "PiClient",
-        },
-      }),
-      dispose: vi.fn(),
-    };
-    return vi.fn().mockReturnValue(mockExecutor);
-  }
-
-  it("resolves and executes function by name", async () => {
-    const items = [{ description: "task 1", priority: "high" }];
-    const factory = createMockExecutorFactory(items);
+  it("resolves function and uses standard tier by default", async () => {
+    const factory = mockExecutorFactory();
+    const registry = createTestRegistry();
     const tool = createBamlRunTool(registry, factory, settings);
-    const ctx = createMockContext();
+    const ctx: ToolContext = { modelRegistry: mockRegistry() };
 
-    const result = await tool.execute({
-      function: "ExtractItems",
-      args: { text: "meeting notes here" },
-    }, ctx);
-
-    const parsed = JSON.parse(textOf(result));
-    expect(parsed).toEqual(items);
-    expect(factory).toHaveBeenCalled();
-  });
-
-  it("passes model override to executor factory", async () => {
-    const factory = createMockExecutorFactory([]);
-    const tool = createBamlRunTool(registry, factory, settings);
-    const ctx = createMockContext();
-
-    await tool.execute({
-      function: "ExtractItems",
-      args: { text: "hi" },
-      model: "anthropic/claude-4.5-sonnet",
-    }, ctx);
-
-    expect(factory).toHaveBeenCalledWith(
-      expect.objectContaining({
-        modelOverride: "anthropic/claude-4.5-sonnet",
-        apiKey: "test-api-key",
-      }),
+    const result = await tool.execute(
+      { function: "TestFunc", args: { input: "hello" } },
+      ctx,
     );
+
+    expect(ctx.modelRegistry!.find).toHaveBeenCalledWith("github-copilot", "claude-sonnet-4.6");
+    const parsed = JSON.parse(result.content[0]!.text);
+    expect(parsed).toEqual([{ task: "do thing" }]);
   });
 
-  it("returns actionable error for unknown function", async () => {
-    const factory = createMockExecutorFactory(null);
+  it("uses light tier when specified", async () => {
+    const factory = mockExecutorFactory();
+    const registry = createTestRegistry();
+    const tool = createBamlRunTool(registry, factory, settings);
+    const ctx: ToolContext = { modelRegistry: mockRegistry() };
+
+    await tool.execute(
+      { function: "TestFunc", args: {}, model: "light" },
+      ctx,
+    );
+
+    expect(ctx.modelRegistry!.find).toHaveBeenCalledWith("github-copilot", "claude-haiku-4.5");
+  });
+
+  it("returns error when function not found", async () => {
+    const factory = mockExecutorFactory();
+    const registry = createTestRegistry();
+    const tool = createBamlRunTool(registry, factory, settings);
+    const ctx: ToolContext = { modelRegistry: mockRegistry() };
+
+    const result = await tool.execute(
+      { function: "NonExistent", args: {} },
+      ctx,
+    );
+
+    const error = JSON.parse(result.content[0]!.text);
+    expect(error.type).toBe("configuration");
+  });
+
+  it("returns error when modelRegistry missing", async () => {
+    const factory = mockExecutorFactory();
+    const registry = createTestRegistry();
     const tool = createBamlRunTool(registry, factory, settings);
 
-    const result = await tool.execute({
-      function: "NonExistent",
-      args: {},
-    });
+    const result = await tool.execute(
+      { function: "TestFunc", args: {} },
+      { modelRegistry: undefined },
+    );
 
-    const parsed = JSON.parse(textOf(result));
-    expect(parsed.error).toContain("not found");
-    expect(parsed.type).toBe("configuration");
+    const error = JSON.parse(result.content[0]!.text);
+    expect(error.type).toBe("configuration");
+    expect(error.error).toContain("modelRegistry");
   });
 
-  it("returns structured BamlError on execution failure", async () => {
-    const mockExecutor: BamlExecutor = {
-      call: vi.fn().mockRejectedValue(
-        Object.assign(new Error("BAML execution failed"), {
-          bamlError: {
-            error: "BAML execution failed",
-            type: "execution",
-            rawOutput: "I cannot parse this...",
-          },
-        }),
-      ),
+  it("returns execution error on BAML failure", async () => {
+    const factory = vi.fn().mockReturnValue({
+      call: vi.fn().mockRejectedValue(new Error("timeout")),
       dispose: vi.fn(),
-    };
-    const factory = vi.fn().mockReturnValue(mockExecutor);
+    });
+    const registry = createTestRegistry();
     const tool = createBamlRunTool(registry, factory, settings);
-    const ctx = createMockContext();
+    const ctx: ToolContext = { modelRegistry: mockRegistry() };
 
-    const result = await tool.execute({
-      function: "ExtractItems",
-      args: { text: "bad input" },
-    }, ctx);
+    const result = await tool.execute(
+      { function: "TestFunc", args: {} },
+      ctx,
+    );
 
-    const parsed = JSON.parse(textOf(result));
-    expect(parsed.type).toBe("execution");
-    expect(parsed.rawOutput).toBe("I cannot parse this...");
+    const error = JSON.parse(result.content[0]!.text);
+    expect(error.type).toBe("execution");
   });
 
-  it("returns clear error when no modelRegistry available", async () => {
-    const factory = createMockExecutorFactory(null);
-    const tool = createBamlRunTool(registry, factory, settings);
-
-    const result = await tool.execute({
-      function: "ExtractItems",
-      args: { text: "test" },
+  it("passes function args to executor", async () => {
+    const callFn = vi.fn().mockResolvedValue({
+      parsed: "result",
+      metadata: { inputTokens: null, outputTokens: null, cachedInputTokens: null, durationMs: null, model: null },
     });
+    const factory = vi.fn().mockReturnValue({ call: callFn, dispose: vi.fn() });
+    const registry = createTestRegistry();
+    const tool = createBamlRunTool(registry, factory, settings);
+    const ctx: ToolContext = { modelRegistry: mockRegistry() };
 
-    const parsed = JSON.parse(textOf(result));
-    expect(parsed.type).toBe("configuration");
-    expect(parsed.error).toContain("No API key available");
+    await tool.execute(
+      { function: "TestFunc", args: { input: "hello world" } },
+      ctx,
+    );
+
+    expect(callFn).toHaveBeenCalledWith("TestFunc", { input: "hello world" });
   });
 });

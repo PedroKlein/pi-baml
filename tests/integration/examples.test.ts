@@ -5,6 +5,16 @@ import { BamlRuntime } from "@boundaryml/baml";
 
 const EXAMPLES_DIR = join(import.meta.dirname, "../../examples");
 
+/** Synthetic PiClient block for compilation. */
+const SYNTHETIC_CLIENT = `client PiClient {
+  provider anthropic
+  options {
+    model "placeholder"
+    api_key "placeholder"
+  }
+}
+`;
+
 describe("example .baml files compilation", () => {
   const groups = readdirSync(EXAMPLES_DIR, { withFileTypes: true })
     .filter((d) => d.isDirectory())
@@ -21,8 +31,8 @@ describe("example .baml files compilation", () => {
 
     expect(Object.keys(files).length).toBeGreaterThan(0);
 
-    // This should not throw — compilation succeeds
-    const runtime = BamlRuntime.fromFiles("/", files, {});
+    // This should not throw — compilation succeeds (with synthetic PiClient)
+    const runtime = BamlRuntime.fromFiles("/", { ...files, "__pi_client.baml": SYNTHETIC_CLIENT }, {});
     expect(runtime).toBeDefined();
   });
 });
@@ -34,6 +44,7 @@ describe("registry discovers example functions", () => {
         join(EXAMPLES_DIR, "classify-intent/main.baml"),
         "utf-8",
       ),
+      "__pi_client.baml": SYNTHETIC_CLIENT,
     };
 
     const runtime = BamlRuntime.fromFiles("/", files, {});
@@ -46,6 +57,7 @@ describe("registry discovers example functions", () => {
         join(EXAMPLES_DIR, "extract-structured/main.baml"),
         "utf-8",
       ),
+      "__pi_client.baml": SYNTHETIC_CLIENT,
     };
 
     const runtime = BamlRuntime.fromFiles("/", files, {});

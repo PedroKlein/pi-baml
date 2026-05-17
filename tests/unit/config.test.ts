@@ -2,140 +2,75 @@ import { describe, it, expect } from "vitest";
 import { parseBamlSettings } from "../../src/lib/config.js";
 
 describe("parseBamlSettings", () => {
-  describe("valid complete settings", () => {
-    it("parses all fields from a complete config", () => {
-      const input = {
-        baml: {
-          proxy: {
-            anthropic: {
-              provider: "hai-proxy",
-              base_url: "http://localhost:6655/anthropic",
-            },
-            openai: {
-              provider: "github-copilot",
-            },
-          },
-          defaultModel: "anthropic/claude-4.5-haiku",
-          extensions: {
-            "pi-memory": {
-              provider: "anthropic",
-              model: "claude-4.5-haiku",
-            },
-          },
-          functionsDirs: ["~/my-custom-baml-dir"],
-        },
-      };
+  const validSettings = {
+    baml: {
+      models: {
+        light: "github-copilot/claude-haiku-4.5",
+        standard: "github-copilot/claude-sonnet-4.6",
+        heavy: "github-copilot/claude-opus-4.7",
+      },
+    },
+  };
 
-      const result = parseBamlSettings(input);
-
-      expect(result.proxy).toEqual({
-        anthropic: {
-          provider: "hai-proxy",
-          base_url: "http://localhost:6655/anthropic",
-        },
-        openai: { provider: "github-copilot" },
-      });
-      expect(result.defaultModel).toBe("anthropic/claude-4.5-haiku");
-      expect(result.extensions).toEqual({
-        "pi-memory": { provider: "anthropic", model: "claude-4.5-haiku" },
-      });
-      expect(result.functionsDirs).toEqual(["~/my-custom-baml-dir"]);
-    });
+  it("parses valid settings with all three tiers", () => {
+    const result = parseBamlSettings(validSettings);
+    expect(result.models.light).toBe("github-copilot/claude-haiku-4.5");
+    expect(result.models.standard).toBe("github-copilot/claude-sonnet-4.6");
+    expect(result.models.heavy).toBe("github-copilot/claude-opus-4.7");
   });
 
-  describe("missing baml key", () => {
-    it("returns empty defaults when baml key is absent", () => {
-      const result = parseBamlSettings({});
-
-      expect(result.proxy).toEqual({});
-      expect(result.defaultModel).toBeUndefined();
-      expect(result.extensions).toBeUndefined();
-      expect(result.functionsDirs).toBeUndefined();
+  it("parses functionsDirs when present", () => {
+    const result = parseBamlSettings({
+      baml: {
+        models: validSettings.baml.models,
+        functionsDirs: ["/custom/dir", "/another"],
+      },
     });
-
-    it("returns empty defaults for null settings", () => {
-      const result = parseBamlSettings(null);
-
-      expect(result.proxy).toEqual({});
-      expect(result.defaultModel).toBeUndefined();
-    });
+    expect(result.functionsDirs).toEqual(["/custom/dir", "/another"]);
   });
 
-  describe("partial config", () => {
-    it("handles missing optional fields", () => {
-      const input = {
-        baml: {
-          proxy: {
-            anthropic: { provider: "hai-proxy" },
-          },
-        },
-      };
-
-      const result = parseBamlSettings(input);
-
-      expect(result.proxy).toEqual({ anthropic: { provider: "hai-proxy" } });
-      expect(result.defaultModel).toBeUndefined();
-      expect(result.extensions).toBeUndefined();
-      expect(result.functionsDirs).toBeUndefined();
-    });
-
-    it("handles empty proxy map", () => {
-      const input = {
-        baml: {
-          proxy: {},
-          defaultModel: "anthropic/claude-4.5-haiku",
-        },
-      };
-
-      const result = parseBamlSettings(input);
-
-      expect(result.proxy).toEqual({});
-      expect(result.defaultModel).toBe("anthropic/claude-4.5-haiku");
-    });
+  it("omits functionsDirs when absent", () => {
+    const result = parseBamlSettings(validSettings);
+    expect(result.functionsDirs).toBeUndefined();
   });
 
-  describe("malformed entries", () => {
-    it("rejects proxy entry without provider field", () => {
-      const input = {
-        baml: {
-          proxy: {
-            anthropic: { base_url: "http://localhost:6655" },
-          },
-        },
-      };
-
-      expect(() => parseBamlSettings(input)).toThrow(
-        /proxy entry "anthropic".*missing.*provider/i,
-      );
-    });
-
-    it("rejects proxy entry with non-string provider", () => {
-      const input = {
-        baml: {
-          proxy: {
-            anthropic: { provider: 123 },
-          },
-        },
-      };
-
-      expect(() => parseBamlSettings(input)).toThrow(
-        /proxy entry "anthropic".*provider.*string/i,
-      );
-    });
+  it("throws when settings is null", () => {
+    expect(() => parseBamlSettings(null)).toThrow("Missing settings");
   });
 
-  describe("functionsDirs resolution", () => {
-    it("returns custom dirs from config", () => {
-      const input = {
-        baml: {
-          proxy: {},
-          functionsDirs: ["/custom/path", "~/another"],
-        },
-      };
+  it("throws when baml section missing", () => {
+    expect(() => parseBamlSettings({})).toThrow("Missing 'baml' section");
+  });
 
-      const result = parseBamlSettings(input);
+  it("throws when models section missing", () => {
+    expect(() => parseBamlSettings({ baml: {} })).toThrow("Missing 'baml.models'");
+  });
 
-      expect(result.functionsDirs).toEqual(["/custom/path", "~/another"]);
+  it("throws when a tier is missing", () => {
+    expect(() => parseBamlSettings({
+      baml: { models: { light: "a/b", standard: "a/b" } },
+    })).toThrow("baml.models.heavy");
+  });
+
+  it("throws when tier value has no slash", () => {
+    expect(() => parseBamlSettings({
+      baml: { models: { light: "no-slash", standard: "a/b", heavy: "a/b" } },
+    })).toThrow("Must be \"provider/model-id\" format");
+  });
+
+  it("throws when tier value is empty string", () => {
+    expect(() => parseBamlSettings({
+      baml: { models: { light: "", standard: "a/b", heavy: "a/b" } },
+    })).toThrow("baml.models.light");
+  });
+
+  it("filters empty strings from functionsDirs", () => {
+    const result = parseBamlSettings({
+      baml: {
+        models: validSettings.baml.models,
+        functionsDirs: ["valid", "", "  "],
+      },
     });
+    expect(result.functionsDirs).toEqual(["valid"]);
   });
 });

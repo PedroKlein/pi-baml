@@ -8,23 +8,16 @@ import {
   BamlValidationError,
   BamlClientFinishReasonError,
 } from "@boundaryml/baml";
-import type { BamlExecutor, BamlCallMetadata, BamlCallResult, ProxyConfig, BamlError } from "./types.js";
-import { createClientRegistryConfig, parseClientRef } from "./bridge.js";
+import type { BamlExecutor, BamlCallMetadata, BamlCallResult, BamlError } from "./types.js";
 
 /** Input for creating a BAML executor. */
 export interface CreateExecutorInput {
   /** File contents: filename → BAML source */
   readonly files: Record<string, string>;
-  /** Proxy configuration from settings */
-  readonly proxy: ProxyConfig;
-  /** API key resolved from Pi's ModelRegistry */
-  readonly apiKey: string;
-  /** Client reference to configure (e.g. "anthropic/claude-4.5-haiku" or "PiClient") */
-  readonly clientRef: string;
-  /** Default model for PiClient resolution */
-  readonly defaultModel?: string;
-  /** Model override */
-  readonly modelOverride?: string;
+  /** Pre-built ClientRegistry with credentials and model configured. */
+  readonly clientRegistry: ClientRegistry;
+  /** Provider name for the synthetic PiClient block (satisfies BAML compiler). */
+  readonly syntheticProvider?: string;
 }
 
 /**
@@ -32,53 +25,42 @@ export interface CreateExecutorInput {
  *
  * BAML validates all client references at compile time.
  * This placeholder satisfies the compiler; the real credentials
- * are injected via ClientRegistry.addLlmClient() at runtime.
+ * are injected via the provided ClientRegistry at runtime.
  */
 function buildSyntheticClientBlock(provider: string): string {
+  // openai-generic requires base_url at compile time
+  const extraOptions = provider === "openai-generic"
+    ? '\n    base_url "http://placeholder"'
+    : "";
   return `client PiClient {
   provider ${provider}
   options {
     model "placeholder"
-    api_key "placeholder"
+    api_key "placeholder"${extraOptions}
   }
 }
 `;
 }
 
 /**
- * Derive the BAML provider name for the synthetic client block.
+ * Create a BAML executor from file contents and a pre-built ClientRegistry.
  *
- * Resolution order: modelOverride > defaultModel > "anthropic" (safe fallback).
- * Only the provider portion (before the slash) is used.
- */
-function deriveSyntheticProvider(
-  defaultModel: string | undefined,
-  modelOverride: string | undefined,
-): string {
-  const ref = modelOverride ?? defaultModel;
-  if (!ref) return "anthropic";
-  return parseClientRef(ref).provider;
-}
-
-/**
- * Create a BAML executor from file contents.
+ * Compiles the .baml files via BamlRuntime.fromFiles() and
+ * returns a minimal BamlExecutor interface.
  *
- * Compiles the .baml files via BamlRuntime.fromFiles(),
- * creates a ClientRegistry configured with Pi's credentials,
- * and returns a minimal BamlExecutor interface.
+ * The executor has ZERO model logic — the ClientRegistry is
+ * pre-built by the caller (via bridge functions).
  *
  * Throws a structured BamlError on compilation failure.
  */
 export function createBamlExecutor(input: CreateExecutorInput): BamlExecutor {
-  const { files, proxy, apiKey, clientRef, defaultModel, modelOverride } =
-    input;
+  const { files, clientRegistry, syntheticProvider } = input;
 
   // Inject synthetic PiClient definition so BAML compiler can resolve it.
-  // The real credentials are set via ClientRegistry at call time.
-  const syntheticProvider = deriveSyntheticProvider(defaultModel, modelOverride);
+  // Uses the provided provider hint or defaults to "anthropic".
   const compilationFiles: Record<string, string> = {
     ...files,
-    "__pi_client.baml": buildSyntheticClientBlock(syntheticProvider),
+    "__pi_client.baml": buildSyntheticClientBlock(syntheticProvider ?? "anthropic"),
   };
 
   // Compile the runtime
@@ -98,23 +80,6 @@ export function createBamlExecutor(input: CreateExecutorInput): BamlExecutor {
 
   // Create context manager
   const ctx = runtime.createContextManager();
-
-  // Build ClientRegistry with Pi credentials
-  const registryConfig = createClientRegistryConfig({
-    clientRef,
-    proxy,
-    apiKey,
-    ...(defaultModel !== undefined && { defaultModel }),
-    ...(modelOverride !== undefined && { modelOverride }),
-  });
-
-  const clientRegistry = new ClientRegistry();
-  clientRegistry.addLlmClient(
-    registryConfig.name,
-    registryConfig.provider,
-    registryConfig.options,
-  );
-  clientRegistry.setPrimary(registryConfig.name);
 
   // Track disposal state
   let disposed = false;
