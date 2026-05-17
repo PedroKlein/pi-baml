@@ -1,7 +1,9 @@
 # ADR-009: .baml Files Own Their Model Declaration
 
 ## Status
-Accepted
+Superseded by `client PiClient` convention with three-tier model resolution
+
+The original decision (files own their model) was replaced by a uniform convention: all `.baml` files use `client PiClient`, and the model is selected at call time via the tier system (`light`/`standard`/`heavy`). This simplifies the system — model selection belongs to the caller (agent/tool/extension), not the file author. The `ClientRegistry` override in `bridge.ts` ensures the file-declared client is always replaced by the tier-resolved model.
 
 ## Context
 

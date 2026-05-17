@@ -2,24 +2,22 @@
 
 > Items deferred from V1. Prioritized by user impact.
 
-## V1.1 — Registry & Directory Support
+## Completed
 
-These complete the originally-specced V1 features that were deferred for scope:
+| Item | Shipped in |
+|------|------------|
+| Disk-based function discovery (`discoverBamlGroups`) | V1 |
+| Custom tool rendering (`renderCall`/`renderResult`) | V1 |
+| Enriched tool output with model/tier in result envelope | V1 |
+| Model/tier displayed in tool footer alongside token usage | V1 |
 
-### 1. Disk-based function discovery
-**Priority:** High
-**Files:** `src/lib/registry.ts`, `src/index.ts`
+---
 
-Implement actual filesystem scanning at `session_start`:
-- Read `.baml` files from discovery directories (`cwd/.pi/baml/`, `~/.pi/baml/`, `~/.agents/baml/`)
-- Plus any custom dirs from `settings.functionsDirs`
-- Priority ordering: project > pi-local > global (same group name → project wins)
-- Populate the FunctionsRegistry with discovered functions
-- Log warnings for `.baml` files that fail to parse (don't crash)
+## V1.1 — Completions
 
-Currently: Registry is created empty; `baml_list` always returns "no functions found".
+Remaining items from the original V1 spec:
 
-### 2. `createExecutorFromDir()` implementation
+### 1. `createExecutorFromDir()` implementation
 **Priority:** High
 **Files:** `src/eventbus.ts`
 
@@ -30,7 +28,7 @@ Read all `.baml` files from a directory path and pass to `createExecutor()`:
 
 Currently: Throws "not yet implemented".
 
-### 3. Eager compilation at session_start
+### 2. Eager compilation at session_start
 **Priority:** Medium
 **Files:** `src/index.ts`
 
@@ -41,7 +39,7 @@ After discovering registry functions, compile each compilation unit eagerly:
 
 Currently: No compilation until first tool call.
 
-### 4. `PI_BAML_LOG_LEVEL` environment variable
+### 3. `PI_BAML_LOG_LEVEL` environment variable
 **Priority:** Low
 **Files:** `src/index.ts`
 

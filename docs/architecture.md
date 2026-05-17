@@ -215,13 +215,13 @@ function createBamlListTool(registry: FunctionsRegistry): ToolDefinition;
 
 ### `src/tools/baml-run.ts`
 ```typescript
-function createBamlRunTool(registry: FunctionsRegistry, executorFactory: ExecutorFactory): ToolDefinition;
+function createBamlRunTool(registry: FunctionsRegistry, executorFactory: ExecutorFactory, settings: BamlSettings): ToolDefinition;
 
 // Parameters (JSON Schema):
 {
   function: { type: "string", description: "Function name (or group/name if ambiguous)" },
   args: { type: "object", description: "Function arguments as key-value pairs" },
-  model: { type: "string", description: "Optional model override" }
+  model: { type: "string", description: "Model tier override: 'light', 'standard', or 'heavy' (default: standard)" }
 }
 ```
 
@@ -234,8 +234,7 @@ function createBamlExecTool(settings: BamlSettings, executorFactory: ExecExecuto
   code: { type: "string", description: "BAML source code defining at least one function" },
   function: { type: "string", description: "Function name to call" },
   args: { type: "object", description: "Function arguments as key-value pairs" },
-  provider: { type: "string", description: "BAML provider name override" },
-  model: { type: "string", description: "Model override" }
+  model: { type: "string", description: "Model tier override: 'light', 'standard', or 'heavy' (default: standard)" }
 }
 ```
 
@@ -317,6 +316,30 @@ Session lifetime cache:
 - `baml_run` with same function reuses cached executor
 - Model override bypasses cache (creates fresh executor, disposed after use)
 
+## Tool Output Shape
+
+Success responses from `baml_run` and `baml_exec` use an enriched envelope:
+
+```typescript
+// content[0].text:
+{
+  result: T;          // The parsed BAML output
+  model: string;      // Resolved model ref, e.g. "github-copilot/claude-sonnet-4.6"
+  tier: ModelTier;    // "light" | "standard" | "heavy"
+}
+
+// details:
+{
+  metadata: BamlCallMetadata;  // tokens, duration, model from collector
+}
+```
+
+The render layer (`render.ts`) unwraps this envelope to display:
+- Pretty-printed JSON of `result` (the actual parsed output)
+- Footer line: `↳ github-copilot/claude-sonnet-4.6 (standard) • 200 in → 50 out tokens • 2.3s`
+
+Error responses remain unchanged: `{ error: string, type: BamlErrorType, ... }`
+
 ## Error Handling
 
 All errors use a structured type attached to thrown Error instances:
@@ -339,6 +362,5 @@ Tool results serialize errors as JSON strings for the agent to parse and potenti
 
 - `createExecutorFromDir()` is a stub — throws "not yet implemented"
 - No AbortSignal support — BAML's `callFunction` API doesn't accept one
-- Registry is created empty at factory time — disk discovery deferred to V1.1
 - No eager compilation at session_start — deferred to V1.1
 - `PI_BAML_LOG_LEVEL` env var not yet implemented

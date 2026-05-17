@@ -1,7 +1,9 @@
 # ADR-002: Explicit Proxy Configuration
 
 ## Status
-Accepted
+Superseded by three-tier model resolution (see `src/lib/bridge.ts`)
+
+The explicit proxy map was replaced by `baml.models` configuration that uses `"provider/model-id"` format. Model resolution now goes through Pi's `ModelRegistry.find()` directly, eliminating the need for a separate proxy mapping layer.
 
 ## Context
 

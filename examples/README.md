@@ -48,11 +48,11 @@ baml_run({ function: "ClassifyIntent", args: { message: "Hello!" } })
 
 ### As templates for baml_exec
 
-Copy the pattern, replace `client "anthropic/..."` with `client PiClient`, and pass to `baml_exec`.
+Copy the pattern and pass to `baml_exec`. All examples already use `client PiClient`, which is the required convention for both registry functions and dynamic code.
 
 ## Key Conventions
 
-1. Each function declares its own client (for registry use)
+1. All functions use `client PiClient` — model selection happens at call time via tiers
 2. Always include `{{ ctx.output_format }}` in prompts
 3. Use `@description` on fields to guide the LLM
-4. One compilation unit per domain concept (classification, extraction, etc.)
+4. One compilation unit (subdirectory) per domain concept

@@ -29,16 +29,26 @@ Add a `baml` section to your `~/.pi/agent/settings.json`:
 ```json
 {
   "baml": {
-    "proxy": {
-      "anthropic": { "provider": "hai-proxy", "base_url": "http://localhost:6655/anthropic" },
-      "openai": { "provider": "github-copilot" }
-    },
-    "defaultModel": "anthropic/claude-4.5-haiku"
+    "models": {
+      "light": "github-copilot/claude-haiku-4.5",
+      "standard": "github-copilot/claude-sonnet-4.6",
+      "heavy": "hai-proxy/anthropic--claude-4.6-opus"
+    }
   }
 }
 ```
 
-The `proxy` map routes BAML provider calls through your Pi providers. The `defaultModel` is used for dynamically-authored BAML code.
+The `models` map defines three tiers used for all BAML calls. The tier is selected at call time based on task complexity:
+
+| Tier | Purpose | Typical Model |
+|------|---------|---------------|
+| `light` | Fast, cheap: simple classification, formatting | haiku-class |
+| `standard` | Most tasks: structured extraction, multi-field output (default) | sonnet-class |
+| `heavy` | Complex reasoning, ambiguous inputs, multi-step logic | opus-class |
+
+Each value is `"provider/model-id"` matching Pi's model registry (see `pi --list-models`).
+
+See [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ## Usage
 
@@ -50,15 +60,28 @@ The `proxy` map routes BAML provider calls through your Pi providers. The `defau
 | `baml_run` | Execute a pre-defined function by name |
 | `baml_exec` | Compile + execute dynamic BAML code inline |
 
+All tools accept an optional `model` parameter to select the tier: `"light"`, `"standard"`, or `"heavy"` (default: `"standard"`).
+
+Tool output includes the resolved model and tier in a structured envelope:
+
+```json
+{
+  "result": [{"task": "Buy milk", "priority": "low"}],
+  "model": "github-copilot/claude-haiku-4.5",
+  "tier": "light"
+}
+```
+
 ### Writing .baml files
 
-Place `.baml` files in any of these directories (by priority):
+Place `.baml` files in any of these directories (by priority, highest first):
 
-1. `<project>/.pi/baml/<group>/` — project-specific
-2. `~/.pi/baml/<group>/` — Pi-local
-3. `~/.agents/baml/<group>/` — shared across agents
+1. `<project>/.agents/baml/<group>/` — project-specific (highest priority)
+2. `<project>/.pi/baml/<group>/` — project Pi-local
+3. `~/.pi/baml/<group>/` — user Pi-local
+4. `~/.agents/baml/<group>/` — shared across agents (lowest priority)
 
-Each subdirectory is a compilation unit. Example:
+Each subdirectory is a compilation unit (group). Example:
 
 ```
 ~/.agents/baml/
@@ -81,7 +104,7 @@ class ActionItem {
 }
 
 function ExtractActionItems(meeting_notes: string) -> ActionItem[] {
-  client "anthropic/claude-4.5-haiku"
+  client PiClient
   prompt #"
     Extract action items from these meeting notes.
 
@@ -92,6 +115,8 @@ function ExtractActionItems(meeting_notes: string) -> ActionItem[] {
   "#
 }
 ```
+
+> **Key convention:** Always use `client PiClient`. The actual model is selected at call time via the tier system.
 
 ### For Extension Authors
 
@@ -108,20 +133,30 @@ pi.events.on("pi-baml:ready", (lib) => {
 // Use it after session_start
 pi.on("session_start", async (event, ctx) => {
   if (!baml?.available) return;
-  
+
+  // Create an executor from in-memory files (tier defaults to "standard")
   const executor = await baml.createExecutor(
-    { "classify.baml": classifyBamlSource },  // in-memory .baml files
-    { provider: "anthropic", model: "claude-4.5-haiku" }
+    { "classify.baml": classifyBamlSource },
+    "light",  // optional tier override
   );
-  
+
   const result = await executor.call("ClassifySkill", {
     prompt: userMessage,
     skills: skillList,
   });
+
+  // Or use the one-shot API
+  const classified = await baml.execBaml(
+    classifyBamlSource,
+    "ClassifySkill",
+    { prompt: userMessage, skills: skillList },
+    "light",
+  );
+
+  // Or call a registered function by name
+  const todos = await baml.call("ExtractTodos", { notes: meetingNotes }, "heavy");
 });
 ```
-
-> **Note:** `createExecutorFromDir()` is planned for V1.1. In V1, pass file contents directly to `createExecutor()`.
 
 ## Development
 
@@ -130,7 +165,7 @@ npm install
 npm run build          # tsup → dist/
 npm run typecheck      # tsc --noEmit
 npm run lint           # eslint src/ tests/
-npm test               # vitest (72 unit tests)
+npm test               # vitest (113 unit tests)
 npm run test:integration  # real BAML compilation (requires @boundaryml/baml)
 ```
 

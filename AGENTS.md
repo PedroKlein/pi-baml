@@ -175,3 +175,5 @@ npm run test:integration  # real BAML compilation
 6. **Headers must be objects** — BAML's `addLlmClient` options accept `{ [key: string]: any }`. Headers must be passed as a JS object, never `JSON.stringify()`.
 7. **No `openai-responses` models** — BAML 0.85.0 lacks this provider. Throws explicit error.
 8. **Copilot auth is provider-aware** — `anthropic` needs Bearer in headers; `openai-generic` uses `api_key` natively (see ADR-013).
+9. **Enriched tool output** — `baml_run`/`baml_exec` return `{ result, model, tier }` envelope. The render layer unwraps this for display and shows model/tier in the footer.
+10. **Discovery runs at factory time** — `discoverBamlGroups(cwd, functionsDirs)` scans all discovery paths and populates the registry immediately.
