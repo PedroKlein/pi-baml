@@ -24,7 +24,8 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/ tests/",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepare": "npm run build"
   },
   "pi": {
     "extensions": [
@@ -35,6 +36,7 @@
     ]
   },
   "keywords": [
+    "pi-package",
     "pi",
     "baml",
     "structured-output",

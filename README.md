@@ -12,15 +12,27 @@ BAML integration for the [Pi coding agent](https://github.com/earendil-works/pi-
 
 ## Installation
 
-Add to your Pi `settings.json`:
+Install via Pi's package manager:
+
+```bash
+# Latest (auto-updated with `pi update`)
+pi install https://github.com/PedroKlein/pi-baml
+
+# Pinned to a specific release
+pi install https://github.com/PedroKlein/pi-baml@v0.1.0
+```
+
+Or add directly to your `~/.pi/agent/settings.json`:
 
 ```json
 {
   "packages": [
-    "npm:pi-baml"
+    "https://github.com/PedroKlein/pi-baml"
   ]
 }
 ```
+
+Pi clones the repo, installs dependencies, and builds automatically.
 
 ## Configuration
 
