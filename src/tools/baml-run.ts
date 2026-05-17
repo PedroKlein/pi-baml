@@ -52,6 +52,7 @@ export function createBamlRunTool(
       }
 
       // Create executor and call function
+      const modelRef = settings.models[tier];
       try {
         const executor = executorFactory({
           files: entry.files,
@@ -61,7 +62,7 @@ export function createBamlRunTool(
 
         const result = await executor.call(entry.name, functionArgs);
         return {
-          content: [{ type: "text", text: JSON.stringify(result.parsed) }],
+          content: [{ type: "text", text: JSON.stringify({ result: result.parsed, model: modelRef, tier }) }],
           details: { metadata: result.metadata },
         };
       } catch (err) {

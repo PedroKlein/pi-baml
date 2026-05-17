@@ -65,7 +65,7 @@ describe("baml_run tool", () => {
 
     expect(ctx.modelRegistry!.find).toHaveBeenCalledWith("github-copilot", "claude-sonnet-4.6");
     const parsed = JSON.parse(result.content[0]!.text);
-    expect(parsed).toEqual([{ task: "do thing" }]);
+    expect(parsed).toEqual({ result: [{ task: "do thing" }], model: "github-copilot/claude-sonnet-4.6", tier: "standard" });
   });
 
   it("uses light tier when specified", async () => {

@@ -43,6 +43,7 @@ export function createBamlExecTool(
       }
 
       // Create executor and call function
+      const modelRef = settings.models[tier];
       try {
         const executor = executorFactory({
           files: { "dynamic.baml": code },
@@ -54,7 +55,7 @@ export function createBamlExecTool(
         executor.dispose();
 
         return {
-          content: [{ type: "text", text: JSON.stringify(result.parsed) }],
+          content: [{ type: "text", text: JSON.stringify({ result: result.parsed, model: modelRef, tier }) }],
           details: { metadata: result.metadata },
         };
       } catch (err) {

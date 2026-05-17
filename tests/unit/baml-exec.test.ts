@@ -50,7 +50,7 @@ describe("baml_exec tool", () => {
 
     expect(ctx.modelRegistry!.find).toHaveBeenCalledWith("github-copilot", "claude-sonnet-4.6");
     const parsed = JSON.parse(result.content[0]!.text);
-    expect(parsed).toEqual({ result: "ok" });
+    expect(parsed).toEqual({ result: { result: "ok" }, model: "github-copilot/claude-sonnet-4.6", tier: "standard" });
   });
 
   it("uses light tier when specified", async () => {

@@ -48,16 +48,19 @@ function formatTokens(metadata: BamlCallMetadata): string {
 
 /**
  * Format a metadata footer line.
- * Example: "↳ claude-4.5-haiku • 245 in → 89 out tokens • 1.2s"
+ * Example: "↳ github-copilot/claude-sonnet-4.6 (standard) • 245 in → 89 out tokens • 1.2s"
  */
 export function formatMetadataFooter(
   metadata: BamlCallMetadata,
   theme: RenderTheme,
+  tierSuffix: string = "",
 ): string {
   const segments: string[] = [];
 
   if (metadata.model) {
-    segments.push(metadata.model);
+    segments.push(metadata.model + tierSuffix);
+  } else if (tierSuffix) {
+    segments.push(tierSuffix.trim());
   }
 
   const tokens = formatTokens(metadata);
@@ -230,18 +233,33 @@ export function renderBamlResult(
     return theme.fg("error", `↳ error (${err.type}): ${err.error}`);
   }
 
-  // Pretty-print the result
-  const jsonOutput = formatColoredJson(parsed, theme);
+  // Unwrap enriched result shape: { result, model, tier }
+  let displayValue: unknown = parsed;
+  let modelRef: string | null = null;
+  let tier: string | null = null;
+  if (isEnrichedResult(parsed)) {
+    const enriched = parsed as { result: unknown; model: string; tier: string };
+    displayValue = enriched.result;
+    modelRef = enriched.model;
+    tier = enriched.tier;
+  }
 
-  // Extract metadata from details
+  // Pretty-print the result
+  const jsonOutput = formatColoredJson(displayValue, theme);
+
+  // Extract metadata from details and enrich with model/tier from output
   const details = result.details as { metadata?: BamlCallMetadata } | undefined;
   const metadata = details?.metadata;
 
-  if (metadata) {
-    const footer = formatMetadataFooter(metadata, theme);
-    if (footer) {
-      return `${jsonOutput}\n${footer}`;
-    }
+  // Build footer with model ref (prefer enriched model over collector's clientName)
+  const footerMetadata: BamlCallMetadata = metadata
+    ? { ...metadata, model: modelRef ?? metadata.model }
+    : { inputTokens: null, outputTokens: null, cachedInputTokens: null, durationMs: null, model: modelRef };
+
+  const tierSuffix = tier ? ` (${tier})` : "";
+  const footer = formatMetadataFooter(footerMetadata, theme, tierSuffix);
+  if (footer) {
+    return `${jsonOutput}\n${footer}`;
   }
 
   return jsonOutput;
@@ -303,6 +321,13 @@ function isErrorResult(value: unknown): boolean {
   if (!value || typeof value !== "object") return false;
   const obj = value as Record<string, unknown>;
   return typeof obj["error"] === "string" && typeof obj["type"] === "string";
+}
+
+/** Type guard for enriched result shape: { result, model, tier }. */
+function isEnrichedResult(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as Record<string, unknown>;
+  return "result" in obj && typeof obj["model"] === "string" && typeof obj["tier"] === "string";
 }
 
 /** Type guard for message-only results. */

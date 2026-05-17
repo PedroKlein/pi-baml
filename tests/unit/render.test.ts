@@ -191,6 +191,47 @@ describe("render helpers", () => {
       );
       expect(result).toContain("executing");
     });
+
+    it("unwraps enriched result shape and shows model/tier in footer", () => {
+      const result = renderBamlResult(
+        {
+          content: [{ type: "text", text: JSON.stringify({ result: { answer: 42 }, model: "github-copilot/claude-sonnet-4.6", tier: "standard" }) }],
+          details: {
+            metadata: {
+              inputTokens: 200,
+              outputTokens: 50,
+              cachedInputTokens: null,
+              durationMs: 2300,
+              model: "PiClient",
+            },
+          },
+        },
+        plainTheme,
+      );
+      // Should display the unwrapped result value, not the wrapper
+      expect(result).toContain('"answer"');
+      expect(result).toContain("42");
+      // Should show the enriched model ref, NOT "PiClient"
+      expect(result).toContain("github-copilot/claude-sonnet-4.6");
+      expect(result).toContain("(standard)");
+      expect(result).not.toContain("PiClient");
+      // Token/duration info still present
+      expect(result).toContain("200 in");
+      expect(result).toContain("50 out");
+      expect(result).toContain("2.3s");
+    });
+
+    it("shows model/tier in footer even without metadata", () => {
+      const result = renderBamlResult(
+        {
+          content: [{ type: "text", text: JSON.stringify({ result: "hello", model: "hai-proxy/claude-opus", tier: "heavy" }) }],
+          details: undefined,
+        },
+        plainTheme,
+      );
+      expect(result).toContain("hai-proxy/claude-opus");
+      expect(result).toContain("(heavy)");
+    });
   });
 
   describe("renderBamlListResult", () => {
