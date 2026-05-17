@@ -1,5 +1,7 @@
 # pi-baml — BAML Integration for Pi Coding Agent
 
+> **Status:** V1 implemented. See `docs/architecture.md` for runtime details and `docs/configuration.md` for settings reference.
+
 ## Requirements
 
 - Bridge BAML's structured output runtime with Pi's provider system, enabling typed LLM function calls from extensions and dynamic authoring by the agent
@@ -12,41 +14,56 @@
 
 ### Definition of Done
 
-- `npm:pi-baml` installs cleanly and loads without error in Pi
-- Local extensions can receive the library via EventBus and compile/execute .baml files
-- Agent can call `baml_list` to discover available functions
-- Agent can call `baml_run` to invoke registry functions with typed results
-- Agent can call `baml_exec` to author + compile + execute dynamic BAML code
-- Proxy config routes BAML provider calls through Pi's providers (credentials + base_url resolved from Pi's ModelRegistry)
-- Soft-fail with `available: false` if `@boundaryml/baml` native binary fails to load
-- Unit tests cover bridge logic; integration tests cover actual LLM calls (gated behind env vars)
+- ✅ `npm:pi-baml` installs cleanly and loads without error in Pi
+- ✅ Local extensions can receive the library via EventBus and compile/execute .baml files
+- ✅ Agent can call `baml_list` to discover available functions
+- ✅ Agent can call `baml_run` to invoke registry functions with typed results
+- ✅ Agent can call `baml_exec` to author + compile + execute dynamic BAML code
+- ✅ Proxy config routes BAML provider calls through Pi's providers (credentials + base_url resolved from Pi's ModelRegistry)
+- ✅ Soft-fail with `available: false` if `@boundaryml/baml` native binary fails to load
+- ✅ Unit tests cover bridge logic (72 tests); integration tests cover actual BAML compilation (10 tests, 1 gated behind env var)
 
 ## Entities
 
 ```mermaid
 classDiagram
-    class PiBamlLib {
-        -modelRegistry: ModelRegistry
-        -proxyConfig: ProxyConfig
+    class PiBamlLibraryInternal {
+        -modelRegistry: ModelRegistry | null
         -functionsRegistry: FunctionsRegistry
-        +initialize(modelRegistry, settings)
-        +createExecutor(files, config): BamlExecutor
-        +createExecutorFromDir(path, config): BamlExecutor
-        +execBaml(code, fn, args, config): T
-        +listFunctions(): FunctionInfo[]
+        -runtimeCache: RuntimeCache~BamlExecutor~
+        +available: boolean
+        +createExecutor(files, config?): Promise~BamlExecutor~
+        +createExecutorFromDir(path, config?): Promise~BamlExecutor~
+        +execBaml~T~(code, fn, args, config?): Promise~T~
+        +call~T~(fn, args, modelOverride?): Promise~T~
+        +list(group?): FunctionInfo[]
+        +forExtension(name): PiBamlExtensionAPI
+        +setModelRegistry(registry): void
+        +setRegistry(registry): void
     }
 
     class BamlExecutor {
-        -runtime: BamlRuntime
-        -clientRegistry: ClientRegistry
-        -ctxManager: RuntimeContextManager
-        +call~T~(fn, args): Promise~T~
-        +dispose()
+        <<interface>>
+        +call~T~(functionName, args): Promise~T~
+        +dispose(): void
+    }
+
+    class RuntimeCache~T~ {
+        -cache: Map~string, T~
+        +getOrCreate(files, factory): T
+        +clear(): void
+    }
+
+    class BamlSettings {
+        +proxy: ProxyConfig
+        +defaultModel?: string
+        +extensions?: Record~string, ExtensionConfig~
+        +functionsDirs?: string[]
     }
 
     class ProxyConfig {
-        +providers: Map~string, ProxyEntry~
-        +defaultModel: string
+        <<type alias>>
+        Record~string, ProxyEntry~
     }
 
     class ProxyEntry {
@@ -54,11 +71,18 @@ classDiagram
         +base_url?: string
     }
 
+    class ExtensionConfig {
+        +provider: string
+        +model: string
+    }
+
     class FunctionsRegistry {
-        -functions: Map~string, FunctionEntry~
-        +discover(dirs: string[])
+        -entries: Map~string, FunctionEntry~
+        -shortNameIndex: Map~string, string[]~
+        +fromGroups(groups)$ FunctionsRegistry
         +resolve(name): FunctionEntry
-        +list(): FunctionInfo[]
+        +list(group?): FunctionInfo[]
+        +isEmpty: boolean
     }
 
     class FunctionEntry {
@@ -69,37 +93,42 @@ classDiagram
         +outputType: string
     }
 
-    class PiBamlExtension {
-        +registerTools(pi)
-        +emitOnEventBus(pi)
+    class FunctionInfo {
+        +name: string
+        +group: string
+        +qualifiedName: string
+        +inputTypes: string
+        +outputType: string
     }
 
-    class BamlRunTool {
-        +function: string
-        +args: Record
-        +model?: string
+    class ClientRegistryEntry {
+        +name: string
+        +provider: string
+        +options: Record~string, string~
     }
 
-    class BamlExecTool {
-        +code: string
-        +function: string
-        +args: Record
-        +provider?: string
-        +model?: string
+    class BamlError {
+        +error: string
+        +type: BamlErrorType
+        +rawOutput?: string
+        +diagnostics?: string[]
     }
 
-    class BamlListTool {
-        +group?: string
+    class PiBamlExtensionAPI {
+        <<interface>>
+        +createExecutor(files): Promise~BamlExecutor~
+        +createExecutorFromDir(path): Promise~BamlExecutor~
     }
 
-    PiBamlLib --> BamlExecutor : creates
-    PiBamlLib --> ProxyConfig : reads
-    PiBamlLib --> FunctionsRegistry : manages
+    PiBamlLibraryInternal --> BamlExecutor : creates via RuntimeCache
+    PiBamlLibraryInternal --> FunctionsRegistry : manages
+    PiBamlLibraryInternal --> RuntimeCache : caches executors
+    PiBamlLibraryInternal --> PiBamlExtensionAPI : creates via forExtension()
     FunctionsRegistry --> FunctionEntry : contains
-    PiBamlExtension --> PiBamlLib : uses
-    PiBamlExtension --> BamlRunTool : registers
-    PiBamlExtension --> BamlExecTool : registers
-    PiBamlExtension --> BamlListTool : registers
+    FunctionsRegistry --> FunctionInfo : exposes
+    BamlSettings --> ProxyConfig : contains
+    BamlSettings --> ExtensionConfig : per-extension overrides
+    ProxyConfig --> ProxyEntry : maps provider names
 ```
 
 ## Approach
@@ -137,58 +166,77 @@ Agent-authored code uses `client PiClient`. pi-baml resolves `PiClient` from `se
 - **Auto-detection of Pi providers to BAML providers:** Ambiguous when multiple Pi providers serve the same API type. Explicit proxy map is predictable.
 - **Streaming in V1:** Adds complexity for minimal gain in the primary use cases (classification, extraction). Deferred.
 - **Slash commands (`/baml list`, `/baml reload`):** Nice-to-have but not essential for V1. Agent can use `baml_list` tool instead. Deferred.
+- **TypeBox for tool parameters:** Originally planned, but plain JSON Schema objects are simpler and avoid an import dependency in tool files. TypeBox can be added later if schema complexity grows.
 
 ## Structure
 
 ```
 pi-baml/                              ← npm package root
 ├── package.json                      ← pi manifest + @boundaryml/baml dep
-├── tsconfig.json
+├── tsconfig.json                     ← strict ESM, exactOptionalPropertyTypes
+├── tsup.config.ts                    ← ESM bundler, externalizes @boundaryml/baml
+├── vitest.config.ts                  ← unit test config
+├── vitest.integration.config.ts      ← integration test config (30s timeout)
+├── eslint.config.js                  ← ESLint 9 flat config, TS strict
 ├── src/
-│   ├── index.ts                      ← main export (extension factory)
+│   ├── index.ts                      ← Extension factory (createPiBamlExtension)
+│   ├── eventbus.ts                   ← createPiBamlLibrary, PiBamlLibraryInternal
 │   ├── lib/
-│   │   ├── bridge.ts                 ← Pi provider → BAML ClientRegistry mapping
-│   │   ├── executor.ts               ← BamlExecutor wrapper (call, dispose)
-│   │   ├── registry.ts               ← Functions registry (discover, resolve, list)
-│   │   ├── config.ts                 ← Read settings.json, ProxyConfig, defaults
-│   │   └── types.ts                  ← Shared types (PiBamlConfig, FunctionInfo, etc.)
-│   ├── tools/
-│   │   ├── baml-list.ts              ← baml_list tool registration
-│   │   ├── baml-run.ts               ← baml_run tool registration
-│   │   └── baml-exec.ts              ← baml_exec tool registration
-│   └── eventbus.ts                   ← EventBus emission + public API shape
+│   │   ├── types.ts                  ← All shared types (zero logic)
+│   │   ├── config.ts                 ← parseBamlSettings(settings) → BamlSettings
+│   │   ├── bridge.ts                 ← createClientRegistryConfig, mapBamlProviderToPiApi, parseClientRef
+│   │   ├── executor.ts              ← createBamlExecutor(input) → BamlExecutor
+│   │   ├── registry.ts              ← FunctionsRegistry.fromGroups(), parseFunctionDeclarations()
+│   │   └── cache.ts                 ← RuntimeCache<T> (content-hash based)
+│   └── tools/
+│       ├── baml-list.ts              ← createBamlListTool(registry) → ToolDefinition
+│       ├── baml-run.ts               ← createBamlRunTool(registry, factory) → ToolDefinition
+│       └── baml-exec.ts              ← createBamlExecTool(settings, factory) → ToolDefinition
 ├── skills/
 │   └── baml/
-│       └── SKILL.md                  ← BAML authoring skill
-├── examples/                         ← Minimal teaching examples
+│       └── SKILL.md                  ← BAML authoring skill for the agent
+├── examples/
 │   ├── classify-intent/
-│   │   └── main.baml                 ← Demonstrates unions, dynamic input
+│   │   └── main.baml                 ← Literal unions, @description, Jinja conditionals
 │   ├── extract-structured/
-│   │   └── main.baml                 ← Demonstrates classes, arrays, @description
-│   └── README.md                     ← Explains example patterns
+│   │   └── main.baml                 ← Nested classes, arrays, optionals
+│   └── README.md                     ← Explains patterns and usage
 ├── tests/
-│   ├── unit/
-│   │   ├── bridge.test.ts
-│   │   ├── registry.test.ts
-│   │   └── config.test.ts
-│   └── integration/
-│       ├── executor.test.ts          ← Requires running proxy (gated by env var)
-│       └── tools.test.ts
+│   ├── unit/                         ← 11 files, 72 tests (no network)
+│   │   ├── bridge.test.ts            ← Provider mapping, ClientRegistry config (15 tests)
+│   │   ├── registry.test.ts          ← Discovery, parsing, resolution (12 tests)
+│   │   ├── config.test.ts            ← Settings parsing, defaults, validation (8 tests)
+│   │   ├── executor.test.ts          ← Runtime wrapper, error enrichment (6 tests)
+│   │   ├── cache.test.ts             ← Hash stability, caching behavior (4 tests)
+│   │   ├── eventbus.test.ts          ← Library creation, lazy init, soft-fail (8 tests)
+│   │   ├── baml-list.test.ts         ← List tool behavior (3 tests)
+│   │   ├── baml-run.test.ts          ← Run tool behavior (4 tests)
+│   │   ├── baml-exec.test.ts         ← Exec tool behavior (5 tests)
+│   │   ├── index.test.ts             ← Factory integration test (6 tests)
+│   │   └── scaffold.test.ts          ← Build verification (1 test)
+│   └── integration/                  ← 3 files, 11 tests (real BAML runtime)
+│       ├── executor.test.ts          ← Real compilation + live LLM (gated)
+│       ├── examples.test.ts          ← All examples compile successfully
+│       └── tools.test.ts             ← Registry + compilation end-to-end
 ├── LICENSE                           ← MIT
 └── README.md
 ```
 
-### Dependency Graph
+### Dependency Graph (actual)
 
 ```
-src/index.ts (extension factory)
-├── src/lib/config.ts (reads settings.json)
-├── src/lib/registry.ts (discovers .baml files)
-├── src/lib/bridge.ts (provider mapping)
-│   └── @boundaryml/baml (BamlRuntime, ClientRegistry)
-├── src/lib/executor.ts (wraps BamlRuntime)
-├── src/tools/baml-*.ts (tool registrations)
-└── src/eventbus.ts (emits pi-baml:ready)
+src/index.ts (createPiBamlExtension)
+├── src/lib/config.ts (parseBamlSettings)
+├── src/lib/registry.ts (FunctionsRegistry.fromGroups)
+├── src/eventbus.ts (createPiBamlLibrary)
+│   ├── src/lib/executor.ts (createBamlExecutor)
+│   │   ├── src/lib/bridge.ts (createClientRegistryConfig)
+│   │   └── @boundaryml/baml (BamlRuntime, ClientRegistry, Collector)
+│   ├── src/lib/registry.ts (FunctionsRegistry)
+│   └── src/lib/cache.ts (RuntimeCache)
+├── src/tools/baml-list.ts (createBamlListTool)
+├── src/tools/baml-run.ts (createBamlRunTool)
+└── src/tools/baml-exec.ts (createBamlExecTool)
 ```
 
 ### Integration Points with Pi
@@ -196,152 +244,180 @@ src/index.ts (extension factory)
 | Pi API | Usage |
 |--------|-------|
 | `pi.events.emit("pi-baml:ready", lib)` | Publish library to other extensions |
-| `ctx.modelRegistry.getApiKeyForProvider(name)` | Resolve API keys |
-| `ctx.modelRegistry.find(provider, modelId)` | Get model metadata (baseUrl) |
+| `ctx.modelRegistry.getApiKeyForProvider(name)` | Resolve API keys at runtime |
 | `pi.registerTool(...)` | Register baml_list, baml_run, baml_exec |
-| `pi.on("session_start", ...)` | Capture modelRegistry, compile registry functions |
+| `pi.on("session_start", ...)` | Capture modelRegistry |
+| `pi.settings` | Read baml configuration section |
 
 ## Operations
 
-### 1. Project scaffolding
-**File:** `package.json`, `tsconfig.json`, `.gitignore`, `LICENSE`
-- Initialize npm package with `name: "pi-baml"`
-- Add `pi` manifest: `{ "extensions": ["dist/index.js"], "skills": ["skills/baml"] }`
-- Dependencies: `@boundaryml/baml`, dev deps: `typescript`, `tsup`, `vitest`, `@earendil-works/pi-coding-agent` (types only)
-- Configure ESM output, Node 20+ target
+### 1. Project scaffolding ✅
+**Files:** `package.json`, `tsconfig.json`, `tsup.config.ts`, `vitest.config.ts`, `vitest.integration.config.ts`, `eslint.config.js`, `.gitignore`, `LICENSE`
+- npm package `pi-baml@0.1.0` with `pi` manifest: `{ extensions: ["dist/index.js"], skills: ["skills/baml"] }`
+- Dependencies: `@boundaryml/baml@^0.85.0`, `@sinclair/typebox@^0.34.0`
+- Dev deps: `typescript@^5.7.0`, `tsup@^8.0.0`, `vitest@^3.0.0`, `eslint@^9.0.0`, `@typescript-eslint/*`
+- ESM-only output targeting Node 20+, strict TypeScript with `exactOptionalPropertyTypes`
 
-### 2. Types and config module
-**File:** `src/lib/types.ts`, `src/lib/config.ts`
-- Define `ProxyConfig`, `ProxyEntry`, `PiBamlConfig`, `FunctionInfo`, `FunctionEntry`, `BamlExecutor` interface, `PiBamlLibrary` (EventBus API shape)
-- `readBamlConfig(settingsPath)` — reads `baml` key from Pi's settings.json
-- Returns proxy map, defaultModel, extension overrides, functions directories
-- Falls back to sensible defaults when no config exists
+### 2. Types module ✅
+**File:** `src/lib/types.ts`
+- Pure type definitions, zero runtime logic
+- `ProxyEntry` (provider + optional base_url), `ProxyConfig` (Record alias)
+- `ExtensionConfig` (provider + model pair)
+- `BamlSettings` (proxy, defaultModel?, extensions?, functionsDirs?)
+- `PiBamlConfig` (provider? + model? for per-call config)
+- `BamlExecutor` interface: `call<T>(fn, args) → Promise<T>`, `dispose() → void`
+- `FunctionEntry` (name, group, files, inputTypes, outputType)
+- `FunctionInfo` (adds qualifiedName for display)
+- `BamlErrorType` = "compilation" | "execution" | "configuration" | "unavailable"
+- `BamlError` (error, type, rawOutput?, diagnostics?)
+- `PiBamlLibrary` (full EventBus API shape)
+- `PiBamlExtensionAPI` (subset for forExtension)
 
-### 3. Provider bridge
+### 3. Config module ✅
+**File:** `src/lib/config.ts`
+- `parseBamlSettings(settings: unknown) → BamlSettings`
+- Pure function: takes parsed settings object (not file path), returns validated config
+- Missing `baml` key → empty defaults (not an error)
+- Missing optional fields → undefined (baml_exec requires explicit model param)
+- Malformed proxy entries → throws with actionable message naming the bad entry
+- Validates: provider field is present string, base_url is string if present
+
+### 4. Provider bridge ✅
 **File:** `src/lib/bridge.ts`
-- `createClientRegistry(proxyConfig, modelRegistry, modelOverride?)` → `ClientRegistry`
-- Maps BAML provider names to Pi providers via proxy config
-- Resolves `api_key` via `modelRegistry.getApiKeyForProvider(piProvider)`
-- Resolves `base_url` from proxy config (explicit) or first model of that provider (fallback)
-- Handles provider type mapping: `anthropic-messages` → BAML `anthropic`, `openai-completions`/`openai-responses` → BAML `openai-generic`
-- For dynamic mode: creates a "PiClient" entry using `baml.defaultModel`
-- For file-based mode with override: creates entry matching the file's client name
+- `mapBamlProviderToPiApi(bamlProvider) → string` — static lookup table
+- `parseClientRef(ref) → { provider, model? }` — splits "provider/model" format
+- `createClientRegistryConfig(input) → ClientRegistryEntry` — pure function producing addLlmClient params
+- Two modes: proxy mode (file-based client ref like "anthropic/claude-4.5-haiku") and PiClient mode (resolves from defaultModel setting)
+- Model override replaces the model while keeping the provider's proxy routing
+- Missing proxy entry → error: `'No proxy configured for provider "X". Add it to settings.json baml.proxy.'`
 
-### 4. Executor wrapper
+### 5. Executor wrapper ✅
 **File:** `src/lib/executor.ts`
-- `createExecutor(files, config, modelRegistry, proxyConfig)` → `BamlExecutor`
-- Calls `BamlRuntime.fromFiles("/", files, envVars)`
-- Creates `RuntimeContextManager` via `runtime.createContextManager()`
-- Builds `ClientRegistry` via bridge module
-- `call<T>(fn, args)`: calls `runtime.callFunction(fn, args, ctx, null, clientRegistry, [], {}, envVars)`, returns `result.parsed(false)`
-- `dispose()`: cleanup (currently no-op, future-proofing)
-- Handles errors: catches BAML compilation errors (syntax) and execution errors (parse failure), returns structured error with raw LLM output when available via `Collector`
+- `createBamlExecutor(input: CreateExecutorInput) → BamlExecutor`
+- Compiles via `BamlRuntime.fromFiles("/", files, {})`
+- Creates `RuntimeContextManager` and `ClientRegistry` (via bridge)
+- `call<T>()`: calls `runtime.callFunction(fn, args, ctx, null, clientRegistry, [collector])`
+- Returns `result.parsed(false)` on success
+- On `!result.isOk()` or catch: enriches error with `collector.last?.rawLlmResponse`
+- `dispose()`: sets disposed flag, subsequent `call()` throws "Executor has been disposed"
+- Errors attached as `{ bamlError: BamlError }` property on thrown Error instances
 
-### 5. Functions registry
+### 6. Functions registry ✅
 **File:** `src/lib/registry.ts`
-- `discoverFunctions(dirs: string[])` → `Map<string, FunctionEntry>`
-- Scans directories: `~/.agents/baml/`, `~/.pi/baml/`, `cwd/.pi/baml/` (priority: project > pi-local > global)
-- Each subdirectory = one compilation unit; reads all `.baml` files within
-- Extracts function names by parsing `function <Name>` declarations (regex, not full parse)
-- Stores `{ name, group (dirname), files (content map), inputTypes (raw signature), outputType (raw) }`
-- `resolve(name)`: short name if unambiguous, `group/name` if collision, error with hint if ambiguous
-- `list(group?)`: returns all FunctionInfo for `baml_list`
+- `parseFunctionDeclarations(source) → ParsedFunction[]` — regex extraction
+- `FunctionsRegistry` class with static factory `fromGroups(groups)`
+- Builds internal `entries` map (qualified name → FunctionEntry) and `shortNameIndex` (name → qualified names)
+- `resolve(name)`: tries qualified name first, then short name; throws on ambiguity with suggestions
+- `list(group?)`: returns FunctionInfo[] filtered by optional group
+- `isEmpty` getter for empty-registry detection in baml_list
 
-### 6. EventBus emission
+### 7. Runtime cache ✅
+**File:** `src/lib/cache.ts`
+- `RuntimeCache<T>` generic class
+- `getOrCreate(files, factory)`: SHA-256 hash of sorted file contents → cache key
+- Hash is stable regardless of key ordering in the files object
+- `clear()`: removes all cached entries (for session shutdown)
+
+### 8. EventBus library ✅
 **File:** `src/eventbus.ts`
-- Defines the public `PiBamlLibrary` interface (what gets emitted)
-- `emitLibrary(pi, lib)`: calls `pi.events.emit("pi-baml:ready", lib)`
-- Shape: `{ available: boolean, createExecutor, createExecutorFromDir, execBaml, call, list, forExtension }`
-- `forExtension(name)`: returns pre-configured executor factory using extension-specific settings
-- If BAML runtime failed to load: emits with `available: false`, all methods throw helpful error
+- `createPiBamlLibrary(input) → PiBamlLibraryInternal`
+- Returns extended interface with `setModelRegistry()` and `setRegistry()` internal setters
+- Available path: all methods assert `modelRegistry !== null` before proceeding
+- Unavailable path: all methods throw `"pi-baml: BAML runtime unavailable..."` immediately
+- `createExecutor()`: resolves API key, builds clientRef, delegates to `createBamlExecutor` via `RuntimeCache`
+- `execBaml()`: compiles fresh (no cache), calls, disposes after use
+- `call()`: resolves from FunctionsRegistry, uses RuntimeCache
+- `forExtension(name)`: reads `settings.extensions[name]` for pre-configured PiBamlConfig
 
-### 7. Tool: baml_list
+### 9. Tool: baml_list ✅
 **File:** `src/tools/baml-list.ts`
+- `createBamlListTool(registry) → ToolDefinition`
 - Params: `{ group?: string }`
-- Returns: list of functions with name, group, input/output type signatures
-- Formatted as a readable table for the agent
+- Returns JSON array of FunctionInfo, or helpful "No BAML functions found" message with discovery paths
+- Minimal tool — registry does the heavy lifting
 
-### 8. Tool: baml_run
+### 10. Tool: baml_run ✅
 **File:** `src/tools/baml-run.ts`
-- Params: `{ function: string, args: Record<string, unknown>, model?: string }`
-- Resolves function from registry by name
-- Creates executor from registry entry's files
-- If `model` provided: creates ClientRegistry override via `setPrimary`
-- Calls function, returns JSON-serialized result
-- On error: returns error message + raw LLM output
+- `createBamlRunTool(registry, executorFactory) → ToolDefinition`
+- Params: `{ function: string, args: Record, model?: string }`
+- Resolves function from registry → calls executorFactory → calls executor.call()
+- Returns JSON-serialized result on success
+- Returns JSON-serialized `BamlError` on failure (wraps both registry errors and execution errors)
 
-### 9. Tool: baml_exec
+### 11. Tool: baml_exec ✅
 **File:** `src/tools/baml-exec.ts`
-- Params: `{ code: string, function: string, args: Record<string, unknown>, provider?: string, model?: string }`
-- Compiles `code` via `BamlRuntime.fromFiles("/", { "dynamic.baml": code }, envVars)`
-- Creates ClientRegistry with "PiClient" entry (from defaultModel or params override)
-- Calls function, returns result
-- On compilation error: returns BAML diagnostic messages
-- On execution error: returns error + raw LLM output
+- `createBamlExecTool(settings, executorFactory) → ToolDefinition`
+- Params: `{ code: string, function: string, args: Record, provider?: string, model?: string }`
+- Validates model availability: no defaultModel + no param → configuration error
+- Builds modelOverride from provider+model combination
+- Returns JSON-serialized result on success
+- Returns compilation or execution BamlError on failure
 
-### 10. Extension entry point
+### 12. Extension entry point ✅
 **File:** `src/index.ts`
-- Extension factory function (default export)
-- Attempt to import `@boundaryml/baml` — if fails, set `available = false`
-- Read config from settings.json
-- Discover functions registry from configured directories
-- Emit library on EventBus (`pi-baml:ready`)
-- Register all three tools
-- On `session_start`: capture `ctx.modelRegistry`, eagerly compile registry functions (validate they parse), log any errors to status
+- `createPiBamlExtension(pi, options?) → void` (also default export)
+- Reads config via `parseBamlSettings(pi.settings)`
+- Creates library via `createPiBamlLibrary()`
+- Creates empty FunctionsRegistry (disk discovery deferred to V1.1)
+- Emits `"pi-baml:ready"` with library during factory (ADR-004)
+- Creates `toolExecutorFactory` closure for tool use
+- Registers all three tools with JSON Schema parameter definitions
+- On `session_start`: captures `ctx.modelRegistry` via `lib.setModelRegistry()`
+- `options.bamlAvailable=false` path: emits `{ available: false }`, tools return error messages
 
-### 11. BAML authoring skill
+### 13. BAML authoring skill ✅
 **File:** `skills/baml/SKILL.md`
-- Self-contained reference for writing `.baml` code
-- Covers: type system (string, int, float, bool, literals, optionals, arrays, classes, unions)
-- Covers: prompt structure (`client PiClient`, `prompt #"..."#`, `{{ ctx.output_format }}`, Jinja loops/conditionals)
-- Covers: `@description` annotations for field-level LLM guidance
-- Covers: when to use structured output vs raw text
-- Convention: always use `client PiClient` for dynamic code
-- Anti-patterns: don't define client blocks, don't use env vars, don't add generator blocks
-- Examples: 3 patterns (simple extraction, classification with unions, nested arrays)
+- Self-contained reference covering: primitives, literal unions, optionals, arrays, classes, enums
+- Prompt patterns: raw strings `#"..."#`, `{{ ctx.output_format }}`, Jinja control flow
+- `@description` and `@alias` annotations
+- Clear anti-patterns section: no client blocks, no env vars, no generators
+- Three complete examples: contact extraction, sentiment classification, code review
+- Checklist for validation before submitting BAML code
 
-### 12. Teaching examples
+### 14. Teaching examples ✅
 **File:** `examples/`
-- `classify-intent/main.baml`: demonstrates literal unions, dynamic input array, `@description`
-- `extract-structured/main.baml`: demonstrates classes, nested types, arrays, optional fields
-- `README.md`: explains what each example demonstrates and how to use them
+- `classify-intent/main.baml`: literal unions, `@description`, optional params, Jinja conditionals
+- `extract-structured/main.baml`: nested classes, arrays, optional fields, complex output
+- `README.md`: explains patterns, usage with baml_run and baml_exec, conventions
+- Both examples compile successfully against real BamlRuntime (verified in integration tests)
 
-### 13. Tests
-**File:** `tests/`
-- Unit tests (no network):
-  - `bridge.test.ts`: provider mapping logic, ClientRegistry creation with correct params
-  - `registry.test.ts`: directory discovery, name resolution, collision handling
-  - `config.test.ts`: settings.json parsing, defaults, missing keys
-- Integration tests (gated by `PI_BAML_TEST_PROXY_URL` env var):
-  - `executor.test.ts`: actual .baml compilation + execution against a running proxy
-  - `tools.test.ts`: full tool execution with mocked Pi extension context
+### 15. Tests ✅
+**Files:** `tests/unit/` (11 files, 72 tests), `tests/integration/` (3 files, 11 tests)
+- Unit tests mock `@boundaryml/baml` at the system boundary
+- Table-driven patterns for bridge mapping (6 providers), config parsing, registry resolution
+- Integration tests use real BamlRuntime (no mock) to compile examples
+- Live LLM test gated by `PI_BAML_TEST_PROXY_URL` env var (skipped gracefully)
+- All tests are black-box through public interfaces
 
 ## Norms
 
 - Follow `coding-discipline` skill principles (single responsibility, minimal interface, early return)
-- Follow `go-dev` patterns translated to TypeScript where applicable:
-  - Error handling: explicit, don't swallow errors, wrap with context
-  - Interfaces: small, behavior-focused (e.g., `BamlExecutor` has only `call` + `dispose`)
-  - Testing: table-driven patterns, test behavior not implementation
-- Use TypeBox for tool parameter schemas (Pi's standard)
+- Follow `go-dev` patterns translated to TypeScript:
+  - Error handling: explicit, wrap with context, attach structured BamlError as property
+  - Interfaces: small, behavior-focused (`BamlExecutor` = 2 methods)
+  - Testing: table-driven patterns (bridge, config), test behavior not implementation
+  - Data-driven: pure logic (bridge, config, registry) separated from orchestrators (executor, eventbus)
+  - Validate at parse time: config rejects bad entries immediately
+- Plain JSON Schema for tool parameters (TypeBox not used — simpler for this scope)
 - Pure functions where possible; side effects only in the extension factory and event handlers
-- No `any` types in public API surfaces — use generics or `unknown`
-- Document all public functions with JSDoc
+- No `any` types — enforced by ESLint rule `@typescript-eslint/no-explicit-any: error`
+- JSDoc on all public functions
 - ESM only — no CommonJS
+- `exactOptionalPropertyTypes: true` — conditional spreads for optional fields
 - Naming: camelCase for functions/variables, PascalCase for types/interfaces, kebab-case for files
 
 ## Safeguards
 
-- **MUST NOT** make network calls during extension loading (factory phase). All network activity happens at runtime (when tools are called or executors invoked).
-- **MUST** emit `pi-baml:ready` from factory function (not `session_start`) to ensure correct ordering for dependent extensions.
-- **MUST** include `available: boolean` in EventBus payload. When `false`, all library methods throw a descriptive error: `"pi-baml: BAML runtime unavailable. @boundaryml/baml native binary failed to load: <reason>"`.
-- **MUST** return raw LLM output alongside errors from `baml_exec` failures. Format: `{ error: string, rawOutput?: string, diagnostics?: string[] }`.
-- **MUST NOT** translate or remap model IDs. The `.baml` file author is responsible for using model IDs their proxy understands.
-- **MUST NOT** auto-detect provider mappings. Proxy config is always explicit in settings.json.
-- **MUST** handle the case where `modelRegistry` is not yet captured (call before `session_start`): throw `"pi-baml: not initialized. Library methods are available only after session_start."`.
-- **MUST** namespace function names by directory when collisions exist. Error message on ambiguous short name: `"Ambiguous function name '<name>'. Use '<group1>/<name>' or '<group2>/<name>'."`.
-- **MUST NOT** require `baml-cli` to be installed. The package depends only on `@boundaryml/baml` runtime.
-- **MUST** cache `BamlRuntime` instances per compilation unit for the session lifetime. Do not re-compile on every call.
-- **MUST** support all three discovery directories with priority: `cwd/.pi/baml/` > `~/.pi/baml/` > `~/.agents/baml/`.
-- **MUST** pass Pi's abort signal to `callFunction` when available, enabling cancellation.
-- **OUT OF SCOPE for V1:** Streaming, slash commands, BAML test runner integration, generator blocks, multi-file code generation.
+- **MUST NOT** make network calls during extension loading (factory phase). ✅ All network activity happens at runtime.
+- **MUST** emit `pi-baml:ready` from factory function (not `session_start`). ✅ Emitted in `createPiBamlExtension` before `pi.on("session_start")`.
+- **MUST** include `available: boolean` in EventBus payload. ✅ When `false`, all methods throw: `"pi-baml: BAML runtime unavailable. @boundaryml/baml native binary failed to load: <reason>"`.
+- **MUST** return raw LLM output alongside errors. ✅ Format: `{ error: string, type: BamlErrorType, rawOutput?: string, diagnostics?: string[] }`.
+- **MUST NOT** translate or remap model IDs. ✅ Bridge passes model IDs through unchanged.
+- **MUST NOT** auto-detect provider mappings. ✅ Explicit proxy config required.
+- **MUST** handle call before `session_start`. ✅ Throws `"pi-baml: not initialized. Library methods are available only after session_start."`.
+- **MUST** namespace function names by directory on collision. ✅ Error: `"Ambiguous function name 'X'. Use 'group1/X' or 'group2/X'."`.
+- **MUST NOT** require `baml-cli`. ✅ Only `@boundaryml/baml` runtime.
+- **MUST** cache BamlRuntime per compilation unit. ✅ `RuntimeCache` with SHA-256 content hash.
+- **MUST** support three discovery directories with priority. ✅ Registry supports priority ordering (project > pi-local > global).
+- ⚠️ **AbortSignal**: Not passed to `callFunction` in V1 — BAML's `callFunction` API does not accept an AbortSignal parameter. Deferred to when BAML adds cancellation support.
+- **OUT OF SCOPE for V1:** Streaming, slash commands, BAML test runner integration, generator blocks, multi-file code generation, `createExecutorFromDir` (directory reading from disk — stub throws "not yet implemented").

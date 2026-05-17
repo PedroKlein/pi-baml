@@ -39,7 +39,7 @@ Maps BAML provider names to Pi provider configurations.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `provider` | string | Yes | Pi provider name (from `models.json`) |
-| `base_url` | string | No | Override base URL. If omitted, reads from first model of that Pi provider. |
+| `base_url` | string | No | Override base URL. If omitted, no base_url is set in the ClientRegistry (BAML uses the provider's default). |
 
 **Keys** are BAML provider names: `anthropic`, `openai`, `openai-generic`, `google-ai`, `vertex-ai`, `aws-bedrock`.
 

@@ -109,8 +109,8 @@ pi.events.on("pi-baml:ready", (lib) => {
 pi.on("session_start", async (event, ctx) => {
   if (!baml?.available) return;
   
-  const executor = await baml.createExecutorFromDir(
-    join(__dirname, "baml"),  // your extension's .baml files
+  const executor = await baml.createExecutor(
+    { "classify.baml": classifyBamlSource },  // in-memory .baml files
     { provider: "anthropic", model: "claude-4.5-haiku" }
   );
   
@@ -121,12 +121,22 @@ pi.on("session_start", async (event, ctx) => {
 });
 ```
 
+> **Note:** `createExecutorFromDir()` is planned for V1.1. In V1, pass file contents directly to `createExecutor()`.
+
 ## Development
 
 ```bash
 npm install
-npm run build
-npm test
+npm run build          # tsup → dist/
+npm run typecheck      # tsc --noEmit
+npm run lint           # eslint src/ tests/
+npm test               # vitest (72 unit tests)
+npm run test:integration  # real BAML compilation (requires @boundaryml/baml)
+```
+
+Integration tests with live LLM calls require:
+```bash
+PI_BAML_TEST_PROXY_URL=http://localhost:6655 npm run test:integration
 ```
 
 ## License

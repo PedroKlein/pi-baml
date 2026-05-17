@@ -20,31 +20,36 @@ The full REASONS Canvas spec lives at [`spdd/prompt/pi-baml.md`](./spdd/prompt/p
 pi-baml/
 ├── src/
 │   ├── index.ts              ← Extension factory (entry point)
+│   ├── eventbus.ts           ← createPiBamlLibrary + PiBamlLibraryInternal
 │   ├── lib/
-│   │   ├── types.ts          ← All shared types
-│   │   ├── config.ts         ← Settings.json reader
-│   │   ├── bridge.ts         ← Pi provider → BAML ClientRegistry
-│   │   ├── executor.ts       ← BamlRuntime wrapper
-│   │   └── registry.ts       ← .baml file discovery + name resolution
-│   ├── tools/
-│   │   ├── baml-list.ts      ← baml_list tool
-│   │   ├── baml-run.ts       ← baml_run tool
-│   │   └── baml-exec.ts      ← baml_exec tool
-│   └── eventbus.ts           ← EventBus emission (pi-baml:ready)
+│   │   ├── types.ts          ← All shared types (zero logic)
+│   │   ├── config.ts         ← parseBamlSettings()
+│   │   ├── bridge.ts         ← createClientRegistryConfig, mapBamlProviderToPiApi
+│   │   ├── executor.ts       ← createBamlExecutor() → BamlExecutor
+│   │   ├── registry.ts       ← FunctionsRegistry, parseFunctionDeclarations
+│   │   └── cache.ts          ← RuntimeCache<T> (SHA-256 content hash)
+│   └── tools/
+│       ├── baml-list.ts      ← createBamlListTool(registry)
+│       ├── baml-run.ts       ← createBamlRunTool(registry, factory)
+│       └── baml-exec.ts      ← createBamlExecTool(settings, factory)
 ├── skills/
 │   └── baml/
 │       └── SKILL.md          ← BAML authoring skill for the agent
 ├── examples/                 ← Teaching examples (.baml files)
 ├── tests/
-│   ├── unit/                 ← No network needed
-│   └── integration/          ← Gated by PI_BAML_TEST_PROXY_URL env var
+│   ├── unit/                 ← 11 files, 72 tests (no network)
+│   └── integration/          ← 3 files, 11 tests (real BAML runtime)
 ├── docs/
+│   ├── adr/                  ← 12 Architecture Decision Records
 │   ├── architecture.md       ← Detailed technical reference
 │   └── configuration.md      ← Settings.json reference
 ├── spdd/
 │   └── prompt/pi-baml.md     ← REASONS Canvas (source of truth)
 ├── package.json
 ├── tsconfig.json
+├── tsup.config.ts
+├── vitest.config.ts
+├── eslint.config.js
 └── README.md
 ```
 
@@ -55,12 +60,12 @@ pi-baml/
 The core integration uses BAML's low-level TypeScript API (from `@boundaryml/baml`):
 
 ```typescript
-import { BamlRuntime, ClientRegistry, FunctionResult } from "@boundaryml/baml";
+import { BamlRuntime, ClientRegistry, Collector } from "@boundaryml/baml";
 
 // Compile .baml files in-memory (no disk writes needed)
 const runtime = BamlRuntime.fromFiles("/", {
   "main.baml": bamlSourceCode
-}, envVars);
+}, {});  // envVars (empty — credentials injected via ClientRegistry)
 
 // Create execution context
 const ctx = runtime.createContextManager();
@@ -74,20 +79,19 @@ cr.addLlmClient("PiClient", "anthropic", {
 });
 cr.setPrimary("PiClient");
 
-// Execute function
-const result: FunctionResult = await runtime.callFunction(
+// Execute function (actual BAML API signature)
+const collector = new Collector();
+const result = await runtime.callFunction(
   "MyFunction",
   { input: "..." },
   ctx,
   null,           // TypeBuilder (not needed)
   cr,             // ClientRegistry override
-  [],             // Collectors
-  {},             // Tags
-  envVars,        // Runtime env vars
-  signal          // AbortSignal
+  [collector],    // Collectors (for raw output capture)
 );
 
 const parsed = result.parsed(false); // false = don't allow partials
+// On failure: collector.last?.rawLlmResponse has the raw LLM output
 ```
 
 ### Pi Extension API (relevant subset)
@@ -154,8 +158,11 @@ SESSION_START PHASE (later):
 ```bash
 npm install
 npm run build          # tsup → dist/
-npm test               # vitest (unit tests only)
-PI_BAML_TEST_PROXY_URL=http://localhost:6655 npm run test:integration
+npm run typecheck      # tsc --noEmit (strict + exactOptionalPropertyTypes)
+npm run lint           # eslint src/ tests/
+npm test               # vitest (72 unit tests)
+npm run test:integration  # real BAML compilation (11 tests, 1 gated by env var)
+PI_BAML_TEST_PROXY_URL=http://localhost:6655 npm run test:integration  # with live LLM
 ```
 
 ## Dependencies
@@ -163,11 +170,12 @@ PI_BAML_TEST_PROXY_URL=http://localhost:6655 npm run test:integration
 | Package | Purpose |
 |---------|---------|
 | `@boundaryml/baml` | BAML runtime (native NAPI binary) |
+| `@sinclair/typebox` | Tool parameter schemas (available, not yet used in V1) |
 | `@earendil-works/pi-coding-agent` | Pi types (dev only) |
-| `@sinclair/typebox` | Tool parameter schemas |
 | `typescript` | Build |
 | `tsup` | Bundler |
 | `vitest` | Test runner |
+| `eslint` + `@typescript-eslint/*` | Linting |
 
 ## Important Constraints (from SPDD Safeguards)
 
