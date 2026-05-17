@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { parseBamlSettings } from "./lib/config.js";
 import { FunctionsRegistry } from "./lib/registry.js";
+import { discoverBamlGroups } from "./lib/discovery.js";
 import { createPiBamlLibrary, type PiBamlLibraryInternal } from "./eventbus.js";
 import { createBamlListTool } from "./tools/baml-list.js";
 import { createBamlRunTool } from "./tools/baml-run.js";
@@ -61,6 +62,8 @@ export interface ExtensionOptions {
   loadError?: string;
   /** Override settings (for testing). When provided, skips disk read. */
   settings?: unknown;
+  /** Override cwd for discovery (for testing). Defaults to process.cwd(). */
+  cwd?: string;
 }
 
 /** Minimal Pi extension API subset we depend on. */
@@ -129,8 +132,10 @@ export function createPiBamlExtension(
     settings,
   });
 
-  // Discover functions registry (empty for now, populated at session_start from disk)
-  const registry = FunctionsRegistry.fromGroups({});
+  // Discover functions from standard directories
+  const cwd = options?.cwd ?? process.cwd();
+  const discoveredGroups = discoverBamlGroups(cwd, settings.functionsDirs);
+  const registry = FunctionsRegistry.fromGroups(discoveredGroups);
   lib.setRegistry(registry);
 
   // Emit library on EventBus (factory phase — ADR-004)

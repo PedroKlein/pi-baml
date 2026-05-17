@@ -20,7 +20,7 @@ export function createBamlListTool(registry: FunctionsRegistry): ToolDefinition 
             text: JSON.stringify({
               message:
                 "No BAML functions found. Place .baml files in subdirectories of: " +
-                "<project>/.pi/baml/, ~/.pi/baml/, or ~/.agents/baml/",
+                "<project>/.agents/baml/, <project>/.pi/baml/, ~/.pi/baml/, or ~/.agents/baml/",
             }),
           }],
           details: undefined,

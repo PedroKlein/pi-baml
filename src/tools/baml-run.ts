@@ -62,7 +62,7 @@ export function createBamlRunTool(
       try {
         const executor = executorFactory({
           files: entry.files,
-          clientRef: `${entry.group}/default`,
+          clientRef: settings.defaultModel ?? "PiClient",
           apiKey,
           ...(model !== undefined && { modelOverride: model }),
         });
