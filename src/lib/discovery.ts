@@ -67,14 +67,18 @@ function scanDirectory(root: string): DiscoveredGroups {
       continue;
     }
 
+    let hasBamlFile = false;
     for (const file of subEntries) {
-      if (!file.endsWith(".baml")) continue;
+      const isBAML = file.endsWith(".baml");
+      const isReadme = file === "README.md";
+      if (!isBAML && !isReadme) continue;
 
       const filePath = join(entryPath, file);
       try {
         const stat2 = statSync(filePath);
         if (!stat2.isFile()) continue;
         files[file] = readFileSync(filePath, "utf-8");
+        if (isBAML) hasBamlFile = true;
       } catch {
         // Skip unreadable files
         continue;
@@ -82,8 +86,85 @@ function scanDirectory(root: string): DiscoveredGroups {
     }
 
     // Only register groups that have at least one .baml file
-    if (Object.keys(files).length > 0) {
+    if (hasBamlFile) {
       groups[entry] = files;
+    }
+  }
+
+  return groups;
+}
+
+/**
+ * Scan skill directories for BAML groups.
+ *
+ * Each `<skillsDir>/<skill-name>/baml/` directory becomes a group with
+ * a `skill:` prefix (e.g. `skill:diagnose`).
+ *
+ * Skills without a `baml/` subdirectory are silently skipped.
+ * The baml/ directory is scanned flat — .baml files live directly inside it,
+ * not in further subdirectories.
+ */
+export function scanSkillDirectories(skillsDir: string): DiscoveredGroups {
+  const groups: DiscoveredGroups = {};
+
+  let entries: string[];
+  try {
+    entries = readdirSync(skillsDir);
+  } catch {
+    // Directory doesn't exist or isn't readable — skip silently
+    return groups;
+  }
+
+  for (const entry of entries) {
+    if (entry.startsWith(".")) continue;
+
+    const skillPath = join(skillsDir, entry);
+    let skillStat;
+    try {
+      skillStat = statSync(skillPath);
+    } catch {
+      continue;
+    }
+    if (!skillStat.isDirectory()) continue;
+
+    const bamlPath = join(skillPath, "baml");
+    let bamlStat;
+    try {
+      bamlStat = statSync(bamlPath);
+    } catch {
+      // No baml/ subdir — skip silently
+      continue;
+    }
+    if (!bamlStat.isDirectory()) continue;
+
+    // Read files directly from baml/ (flat — not recursive into subdirs)
+    let bamlEntries: string[];
+    try {
+      bamlEntries = readdirSync(bamlPath);
+    } catch {
+      continue;
+    }
+
+    const files: Record<string, string> = {};
+    let hasBamlFile = false;
+    for (const file of bamlEntries) {
+      const isBAML = file.endsWith(".baml");
+      const isReadme = file === "README.md";
+      if (!isBAML && !isReadme) continue;
+
+      const filePath = join(bamlPath, file);
+      try {
+        const fileStat = statSync(filePath);
+        if (!fileStat.isFile()) continue;
+        files[file] = readFileSync(filePath, "utf-8");
+        if (isBAML) hasBamlFile = true;
+      } catch {
+        continue;
+      }
+    }
+
+    if (hasBamlFile) {
+      groups[`skill:${entry}`] = files;
     }
   }
 
@@ -102,10 +183,20 @@ function scanDirectory(root: string): DiscoveredGroups {
 export function discoverBamlGroups(
   cwd: string,
   extraDirs?: readonly string[],
+  skillsDirs?: readonly string[],
 ): DiscoveredGroups {
   const merged: DiscoveredGroups = {};
 
-  // Standard directories (lowest to highest priority)
+  // 1. Skill directories — lowest priority (skill: prefixed groups)
+  const resolvedSkillsDirs = skillsDirs ?? [join(homedir(), ".agents", "skills")];
+  for (const skillsDir of resolvedSkillsDirs) {
+    const skillGroups = scanSkillDirectories(skillsDir);
+    for (const [group, files] of Object.entries(skillGroups)) {
+      merged[group] = files;
+    }
+  }
+
+  // 2. Standard directories (lowest to highest priority)
   const dirs = getDiscoveryDirs(cwd);
 
   // Extra dirs from settings go between standard global and project dirs

@@ -37,7 +37,10 @@ pi-baml/
 │   │   ├── bridge.ts         ← resolveModelTier() — single resolution function
 │   │   ├── executor.ts       ← createBamlExecutor() → BamlExecutor
 │   │   ├── registry.ts       ← FunctionsRegistry, parseFunctionDeclarations
-│   │   └── cache.ts          ← RuntimeCache<T> (SHA-256 content hash)
+│   │   ├── cache.ts          ← RuntimeCache<T> (SHA-256 content hash)
+│   │   ├── readme-parser.ts  ← parseReadmeDescription(), parseReadmeBody()
+│   │   ├── type-parser.ts    ← parseTypeDefinitions()
+│   │   └── system-prompt.ts  ← renderBamlSystemPrompt()
 │   └── tools/
 │       ├── baml-list.ts      ← createBamlListTool(registry)
 │       ├── baml-run.ts       ← createBamlRunTool(registry, factory, settings)
@@ -117,8 +120,32 @@ export default function(pi: ExtensionAPI) {
   pi.events.emit("pi-baml:ready", libraryObject);
   // No session_start handler needed — library is stateless.
   // Consumers pass ctx.modelRegistry on each library method call.
+  pi.on("before_agent_start", (event) => {
+    // Append <available_baml_functions> block to system prompt
+  });
 }
 ```
+
+### Discovery Priority
+
+Functions are discovered at factory time from these directories (lowest → highest priority):
+
+| Priority | Path | Group prefix |
+|----------|------|--------------|
+| 1 (lowest) | `~/.agents/skills/*/baml/` | `skill:` |
+| 2 | `~/.agents/baml/<group>/` | none |
+| 3 | `~/.pi/baml/<group>/` | none |
+| 4 | `[settings.functionsDirs]` | none |
+| 5 | `<cwd>/.pi/baml/<group>/` | none |
+| 6 (highest) | `<cwd>/.agents/baml/<group>/` | none |
+
+`skill:` groups compile at startup and are available for `baml_run` but are excluded from the system prompt injection.
+
+### System Prompt Injection
+
+`src/index.ts` registers a `before_agent_start` handler that appends an `<available_baml_functions>` XML block to the system prompt — mirroring how `<available_skills>` works. Only non-`skill:` groups with descriptions appear in this block. The agent uses it to decide when to call `baml_list` for full signatures.
+
+Disable with `baml.systemPrompt: false` in settings.
 
 ### Pi API type → BAML provider mapping
 
@@ -175,3 +202,6 @@ npm run test:integration  # real BAML compilation
 9. **Enriched tool output** — `baml_run`/`baml_exec` return `{ result, model, tier }` envelope. The render layer unwraps this for display and shows model/tier in the footer.
 10. **Discovery runs at factory time** — `discoverBamlGroups(cwd, functionsDirs)` scans all discovery paths and populates the registry immediately.
 11. **ModelRegistry is explicit** — library methods require `modelRegistry` as a parameter. No internal state, no session_start handler, no lifecycle coupling (see ADR-007).
+12. **`skill:` prefix for skill-colocated BAML** — literal in registry key. Qualified names: `skill:diagnose/ClassifyBugPhase`.
+13. **System prompt excludes skill groups** — only non-`skill:` groups appear in `<available_baml_functions>`.
+14. **README.md filtered from compilation** — never passed to `BamlRuntime.fromFiles()`. Only `.baml` files are compiled.

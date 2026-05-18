@@ -9,6 +9,7 @@ import { createBamlListTool } from "./tools/baml-list.js";
 import { createBamlRunTool } from "./tools/baml-run.js";
 import { createBamlExecTool } from "./tools/baml-exec.js";
 import { createBamlExecutor } from "./lib/executor.js";
+import { renderBamlSystemPrompt } from "./lib/system-prompt.js";
 import {
   renderBamlExecCall,
   renderBamlRunCall,
@@ -125,6 +126,15 @@ export function createPiBamlExtension(
   // Emit on EventBus
   pi.events.emit("pi-baml:ready", lib);
 
+  // System prompt injection — computed once, handler appends the cached block
+  const systemPromptBlock = settings.systemPrompt !== false ? renderBamlSystemPrompt(registry) : null;
+  if (systemPromptBlock !== null) {
+    pi.on("before_agent_start", async (...args: unknown[]) => {
+      const event = args[0] as { systemPrompt?: string };
+      return { systemPrompt: (event?.systemPrompt ?? "") + "\n\n" + systemPromptBlock };
+    });
+  }
+
   // Executor factory
   function toolExecutorFactory(input: {
     files: Record<string, string>;
@@ -155,7 +165,7 @@ export function createPiBamlExtension(
   const listTool = createBamlListTool(registry);
   pi.registerTool({
     name: "baml_list",
-    description: "List available BAML functions from the registry. Use before baml_run to discover function names and signatures.",
+    description: "List available BAML functions from the registry. Without a group filter: returns a compact index of all groups with names, descriptions, and function names. With a group filter: returns full detail including README documentation, type definitions, and function signatures — everything needed to construct a baml_run call.",
     parameters: {
       type: "object",
       properties: {

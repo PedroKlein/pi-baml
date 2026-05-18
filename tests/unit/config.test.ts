@@ -73,4 +73,31 @@ describe("parseBamlSettings", () => {
     });
     expect(result.functionsDirs).toEqual(["valid"]);
   });
+
+  it("returns systemPrompt: true by default", () => {
+    const result = parseBamlSettings(validSettings);
+    expect(result.systemPrompt).toBe(true);
+  });
+
+  it("accepts explicit systemPrompt: false", () => {
+    const result = parseBamlSettings({
+      baml: { ...validSettings.baml, systemPrompt: false },
+    });
+    expect(result.systemPrompt).toBe(false);
+  });
+
+  it("accepts explicit systemPrompt: true", () => {
+    const result = parseBamlSettings({
+      baml: { ...validSettings.baml, systemPrompt: true },
+    });
+    expect(result.systemPrompt).toBe(true);
+  });
+
+  it("rejects non-boolean systemPrompt", () => {
+    expect(() =>
+      parseBamlSettings({
+        baml: { ...validSettings.baml, systemPrompt: "yes" },
+      }),
+    ).toThrow("Invalid 'baml.systemPrompt': must be a boolean");
+  });
 });

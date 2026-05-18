@@ -1,4 +1,6 @@
-import type { FunctionEntry, FunctionInfo } from "./types.js";
+import { parseReadmeDescription, parseReadmeBody } from "./readme-parser.js";
+import { parseTypeDefinitions } from "./type-parser.js";
+import type { FunctionEntry, FunctionInfo, GroupInfo, GroupDetail } from "./types.js";
 
 /** Parsed function declaration from .baml source. */
 interface ParsedFunction {
@@ -40,6 +42,8 @@ export function parseFunctionDeclarations(source: string): ParsedFunction[] {
 export class FunctionsRegistry {
   private readonly entries: Map<string, FunctionEntry> = new Map();
   private readonly shortNameIndex: Map<string, string[]> = new Map();
+  private readonly groupDescriptions: Map<string, string> = new Map();
+  private readonly groupReadmes: Map<string, string> = new Map();
 
   private constructor() {}
 
@@ -55,9 +59,23 @@ export class FunctionsRegistry {
     const registry = new FunctionsRegistry();
 
     for (const [group, files] of Object.entries(groups)) {
+      // Extract and filter README.md — executor must never see it
+      const readmeContent = files["README.md"];
+      const { "README.md": _, ...bamlFiles } = files;
+      const description = readmeContent
+        ? parseReadmeDescription(readmeContent)
+        : undefined;
+
+      if (description !== undefined) {
+        registry.groupDescriptions.set(group, description);
+      }
+      if (readmeContent !== undefined) {
+        registry.groupReadmes.set(group, readmeContent);
+      }
+
       const allFunctions: ParsedFunction[] = [];
 
-      for (const source of Object.values(files)) {
+      for (const source of Object.values(bamlFiles)) {
         allFunctions.push(...parseFunctionDeclarations(source));
       }
 
@@ -67,9 +85,10 @@ export class FunctionsRegistry {
         const entry: FunctionEntry = {
           name: fn.name,
           group,
-          files,
+          files: bamlFiles,
           inputTypes: fn.inputTypes,
           outputType: fn.outputType,
+          ...(description !== undefined && { description }),
         };
 
         registry.entries.set(qualifiedName, entry);
@@ -139,10 +158,77 @@ export class FunctionsRegistry {
         qualifiedName,
         inputTypes: entry.inputTypes,
         outputType: entry.outputType,
+        ...(entry.description !== undefined && { description: entry.description }),
       });
     }
 
     return results;
+  }
+
+  /** List all groups with names, descriptions, and function names. */
+  listGroups(): GroupInfo[] {
+    const groupFunctions = new Map<string, string[]>();
+
+    for (const entry of this.entries.values()) {
+      const fns = groupFunctions.get(entry.group) ?? [];
+      fns.push(entry.name);
+      groupFunctions.set(entry.group, fns);
+    }
+
+    return [...groupFunctions.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, functions]) => {
+        const description = this.groupDescriptions.get(name);
+        return {
+          name,
+          ...(description !== undefined && { description }),
+          functions,
+        };
+      });
+  }
+
+  /**
+   * Get full detail for a specific group.
+   *
+   * Returns undefined if the group does not exist.
+   */
+  describeGroup(name: string): GroupDetail | undefined {
+    const functions: FunctionInfo[] = [];
+    let groupFiles: Readonly<Record<string, string>> | undefined;
+
+    for (const [qualifiedName, entry] of this.entries) {
+      if (entry.group !== name) continue;
+      functions.push({
+        name: entry.name,
+        group: entry.group,
+        qualifiedName,
+        inputTypes: entry.inputTypes,
+        outputType: entry.outputType,
+        ...(entry.description !== undefined && { description: entry.description }),
+      });
+      groupFiles ??= entry.files;
+    }
+
+    if (functions.length === 0) {
+      return undefined;
+    }
+
+    // Collect type definitions from all .baml files in the group
+    const types: string[] = [];
+    for (const source of Object.values(groupFiles ?? {})) {
+      types.push(...parseTypeDefinitions(source));
+    }
+
+    const readmeContent = this.groupReadmes.get(name);
+    const description = this.groupDescriptions.get(name);
+    const readme = readmeContent ? parseReadmeBody(readmeContent) : undefined;
+    return {
+      group: name,
+      ...(description !== undefined && { description }),
+      ...(readme !== undefined && { readme }),
+      types,
+      functions,
+    };
   }
 
   /** Check if the registry has any functions. */

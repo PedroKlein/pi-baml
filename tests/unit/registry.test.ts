@@ -245,3 +245,115 @@ describe("FunctionsRegistry", () => {
     });
   });
 });
+
+describe("description from README.md", () => {
+  it("populates description from README frontmatter", () => {
+    const registry = FunctionsRegistry.fromGroups({
+      extraction: {
+        "main.baml": `function Extract(text: string) -> Item[] { client PiClient prompt #"..."# }`,
+        "README.md": "---\ndescription: Extract structured items from text\n---\n\n# Extraction\n...",
+      },
+    });
+    const entry = registry.resolve("Extract");
+    expect(entry.description).toBe("Extract structured items from text");
+  });
+
+  it("description is undefined when no README.md", () => {
+    const registry = FunctionsRegistry.fromGroups({
+      extraction: {
+        "main.baml": `function Extract(text: string) -> Item[] { client PiClient prompt #"..."# }`,
+      },
+    });
+    const entry = registry.resolve("Extract");
+    expect(entry.description).toBeUndefined();
+  });
+
+  it("filters README.md from entry files", () => {
+    const registry = FunctionsRegistry.fromGroups({
+      extraction: {
+        "main.baml": `function Extract(text: string) -> Item[] { client PiClient prompt #"..."# }`,
+        "README.md": "---\ndescription: test\n---\nbody",
+      },
+    });
+    const entry = registry.resolve("Extract");
+    expect(entry.files["README.md"]).toBeUndefined();
+    expect(entry.files["main.baml"]).toBeDefined();
+  });
+});
+
+describe("listGroups", () => {
+  it("returns all groups with descriptions and function names", () => {
+    const registry = FunctionsRegistry.fromGroups({
+      extraction: {
+        "main.baml": `function Extract(text: string) -> Item[] { client PiClient prompt #"..."# }`,
+        "README.md": "---\ndescription: Extract items\n---",
+      },
+      classification: {
+        "main.baml": `function Classify(text: string) -> Category { client PiClient prompt #"..."# }`,
+      },
+    });
+    const groups = registry.listGroups();
+    expect(groups).toHaveLength(2);
+
+    const sorted = [...groups].sort((a, b) => a.name.localeCompare(b.name));
+    expect(sorted[0]).toEqual({ name: "classification", functions: ["Classify"] });
+    expect(sorted[1]).toEqual({ name: "extraction", description: "Extract items", functions: ["Extract"] });
+  });
+
+  it("sorts groups alphabetically", () => {
+    const registry = FunctionsRegistry.fromGroups({
+      zebra: { "main.baml": `function Z(x: string) -> string { client PiClient prompt #""# }` },
+      alpha: { "main.baml": `function A(x: string) -> string { client PiClient prompt #""# }` },
+    });
+    const groups = registry.listGroups();
+    expect(groups[0]!.name).toBe("alpha");
+    expect(groups[1]!.name).toBe("zebra");
+  });
+
+  it("returns empty array for empty registry", () => {
+    const registry = FunctionsRegistry.fromGroups({});
+    expect(registry.listGroups()).toEqual([]);
+  });
+});
+
+describe("describeGroup", () => {
+  it("returns full detail with readme body and types", () => {
+    const registry = FunctionsRegistry.fromGroups({
+      extraction: {
+        "types.baml": `class Item {\n  name string\n  priority "high" | "low"\n}`,
+        "main.baml": `function Extract(text: string) -> Item[] { client PiClient prompt #"..."# }`,
+        "README.md": "---\ndescription: Extract items\n---\n\n# Extraction Group\n\nUse Extract to pull items.",
+      },
+    });
+    const detail = registry.describeGroup("extraction");
+    expect(detail).toBeDefined();
+    expect(detail!.group).toBe("extraction");
+    expect(detail!.description).toBe("Extract items");
+    expect(detail!.readme).toContain("# Extraction Group");
+    expect(detail!.types.length).toBeGreaterThan(0);
+    expect(detail!.types[0]).toContain("class Item");
+    expect(detail!.functions).toHaveLength(1);
+    expect(detail!.functions[0]!.name).toBe("Extract");
+    expect(detail!.functions[0]!.qualifiedName).toBe("extraction/Extract");
+  });
+
+  it("returns undefined for nonexistent group", () => {
+    const registry = FunctionsRegistry.fromGroups({
+      extraction: { "main.baml": `function X(x: string) -> string { client PiClient prompt #""# }` },
+    });
+    expect(registry.describeGroup("nonexistent")).toBeUndefined();
+  });
+
+  it("works without README.md (no description, no readme body)", () => {
+    const registry = FunctionsRegistry.fromGroups({
+      extraction: {
+        "types.baml": `class Item { name string }`,
+        "main.baml": `function Extract(text: string) -> Item[] { client PiClient prompt #"..."# }`,
+      },
+    });
+    const detail = registry.describeGroup("extraction");
+    expect(detail!.description).toBeUndefined();
+    expect(detail!.readme).toBeUndefined();
+    expect(detail!.types.length).toBeGreaterThan(0);
+  });
+});

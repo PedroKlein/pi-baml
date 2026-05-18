@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createPiBamlExtension } from "../../src/index.js";
+import { discoverBamlGroups } from "../../src/lib/discovery.js";
 
 // Mock @boundaryml/baml
 vi.mock("@boundaryml/baml", () => ({
@@ -18,6 +19,11 @@ vi.mock("@boundaryml/baml", () => ({
   })),
   Collector: vi.fn().mockImplementation(() => ({ last: null })),
   setLogLevel: vi.fn(),
+}));
+
+// Mock discovery so tests are isolated from the real filesystem
+vi.mock("../../src/lib/discovery.js", () => ({
+  discoverBamlGroups: vi.fn().mockReturnValue({}),
 }));
 
 function createMockPi() {
@@ -75,7 +81,43 @@ describe("pi-baml extension factory", () => {
   it("does not register session_start handler (stateless)", () => {
     const pi = createMockPi();
     createPiBamlExtension(pi, { settings: testSettings });
-    expect(pi.on).not.toHaveBeenCalled();
+    // before_agent_start may be registered for system prompt injection, but session_start must not be
+    const events = pi.on.mock.calls.map((c: unknown[]) => (c[0] as string));
+    expect(events).not.toContain("session_start");
+  });
+
+  it("does not register before_agent_start when registry is empty", () => {
+    // discoverBamlGroups is mocked to return {} — registry will be empty
+    const pi = createMockPi();
+    createPiBamlExtension(pi, { settings: testSettings });
+    const events = pi.on.mock.calls.map((c: unknown[]) => (c[0] as string));
+    expect(events).not.toContain("before_agent_start");
+  });
+
+  it("registers before_agent_start when registry has discoverable groups", () => {
+    vi.mocked(discoverBamlGroups).mockReturnValueOnce({
+      "extract-todos": {
+        "main.baml": `function ExtractTodos(notes: string) -> string { client PiClient prompt #""# }`,
+      },
+    });
+    const pi = createMockPi();
+    createPiBamlExtension(pi, { settings: testSettings });
+    const events = pi.on.mock.calls.map((c: unknown[]) => (c[0] as string));
+    expect(events).toContain("before_agent_start");
+  });
+
+  it("does not register before_agent_start when systemPrompt is false", () => {
+    vi.mocked(discoverBamlGroups).mockReturnValueOnce({
+      "extract-todos": {
+        "main.baml": `function ExtractTodos(notes: string) -> string { client PiClient prompt #""# }`,
+      },
+    });
+    const pi = createMockPi();
+    createPiBamlExtension(pi, {
+      settings: { ...testSettings, baml: { ...testSettings.baml, systemPrompt: false } },
+    });
+    const events = pi.on.mock.calls.map((c: unknown[]) => (c[0] as string));
+    expect(events).not.toContain("before_agent_start");
   });
 
   it("emits available=false when settings are invalid", () => {

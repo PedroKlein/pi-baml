@@ -21,10 +21,12 @@ export function parseBamlSettings(settings: unknown): BamlSettings {
   const raw = baml as Record<string, unknown>;
   const models = parseModels(raw["models"]);
   const functionsDirs = parseStringArray(raw["functionsDirs"]);
+  const systemPrompt = parseSystemPrompt(raw["systemPrompt"]);
 
   return {
     models,
     ...(functionsDirs !== undefined && { functionsDirs }),
+    systemPrompt,
   };
 }
 
@@ -65,4 +67,18 @@ function parseStringArray(value: unknown): string[] | undefined {
     (item): item is string => typeof item === "string" && item.trim().length > 0,
   );
   return result.length > 0 ? result : undefined;
+}
+
+/**
+ * Parse the systemPrompt boolean, defaulting to true when absent.
+ * Throws on non-boolean values.
+ */
+function parseSystemPrompt(value: unknown): boolean {
+  if (value === undefined || value === null) {
+    return true;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error("Invalid 'baml.systemPrompt': must be a boolean");
+  }
+  return value;
 }

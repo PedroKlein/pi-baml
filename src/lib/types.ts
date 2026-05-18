@@ -22,6 +22,8 @@ export interface BamlSettings {
   readonly models: ModelTierConfig;
   /** Additional directories to scan for .baml function files */
   readonly functionsDirs?: readonly string[];
+  /** Whether to inject available functions into system prompt (default: true) */
+  readonly systemPrompt?: boolean;
 }
 
 // ─── Executor Types ──────────────────────────────────────────────────────────
@@ -78,6 +80,8 @@ export interface FunctionEntry {
   readonly inputTypes: string;
   /** Raw output type, e.g. "ActionItem[]" */
   readonly outputType: string;
+  /** Human-readable description from README.md frontmatter */
+  readonly description?: string;
 }
 
 /** Public-facing function metadata for baml_list. */
@@ -92,6 +96,24 @@ export interface FunctionInfo {
   readonly inputTypes: string;
   /** Output type */
   readonly outputType: string;
+  /** Human-readable description from README.md frontmatter */
+  readonly description?: string;
+}
+
+/** Compact group summary for unfiltered baml_list output. */
+export interface GroupInfo {
+  readonly name: string;
+  readonly description?: string;
+  readonly functions: readonly string[];
+}
+
+/** Full group detail for filtered baml_list output. */
+export interface GroupDetail {
+  readonly group: string;
+  readonly description?: string;
+  readonly readme?: string;
+  readonly types: readonly string[];
+  readonly functions: readonly FunctionInfo[];
 }
 
 // ─── Error Types ─────────────────────────────────────────────────────────────

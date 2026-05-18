@@ -68,7 +68,7 @@ See [docs/configuration.md](docs/configuration.md) for the full reference.
 
 | Tool | Purpose |
 |------|---------|
-| `baml_list` | Discover available BAML functions in the registry |
+| `baml_list` | Browse available BAML function groups and get detailed signatures |
 | `baml_run` | Execute a pre-defined function by name |
 | `baml_exec` | Compile + execute dynamic BAML code inline |
 
@@ -91,9 +91,28 @@ Place `.baml` files in any of these directories (by priority, highest first):
 1. `<project>/.agents/baml/<group>/` — project-specific (highest priority)
 2. `<project>/.pi/baml/<group>/` — project Pi-local
 3. `~/.pi/baml/<group>/` — user Pi-local
-4. `~/.agents/baml/<group>/` — shared across agents (lowest priority)
+4. `~/.agents/baml/<group>/` — shared across agents
+5. `~/.agents/skills/*/baml/` — skill-colocated (`skill:` prefix, lowest priority)
 
 Each subdirectory is a compilation unit (group). Example:
+
+### Adding descriptions
+
+Add a `README.md` to any group directory:
+
+```markdown
+---
+description: Extract TODO items from freeform text — meeting notes, changelogs, code comments.
+---
+
+# Extract TODOs
+
+Additional documentation about the group and its functions.
+```
+
+The `description` appears in the system prompt so the agent knows when to use these functions. `README.md` is never compiled — only `.baml` files are passed to the BAML runtime.
+
+Example file layout:
 
 ```
 ~/.agents/baml/

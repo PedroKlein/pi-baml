@@ -81,11 +81,29 @@ Custom providers defined in `~/.pi/agent/models.json` work natively as long as t
 
 Additional directories to scan for `.baml` function files. Added to the default discovery paths.
 
-Default discovery (always active):
-1. `<cwd>/.agents/baml/` — project-specific (highest priority)
-2. `<cwd>/.pi/baml/` — project Pi-local
+Default discovery (always active, lowest → highest priority):
+1. `~/.agents/skills/*/baml/` — skill-colocated (`skill:` prefix, lowest priority)
+2. `~/.agents/baml/` — shared across agents
 3. `~/.pi/baml/` — user Pi-local
-4. `~/.agents/baml/` — shared across agents
+4. `[functionsDirs]` — extra dirs from config (this setting)
+5. `<cwd>/.pi/baml/` — project Pi-local
+6. `<cwd>/.agents/baml/` — project-specific (highest priority)
+
+### `systemPrompt` (optional)
+
+Whether to inject available BAML function groups into the system prompt. Default: `true`.
+
+```json
+{
+  "baml": {
+    "systemPrompt": false
+  }
+}
+```
+
+When enabled, an `<available_baml_functions>` block is appended to the system prompt listing all non-skill groups with their descriptions. The agent uses this to decide when to call `baml_list` for details.
+
+`skill:*` groups are always excluded from the system prompt — they are internal to their owning skill.
 
 ## Tool Usage
 

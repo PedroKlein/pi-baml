@@ -52,6 +52,28 @@
 
 ## Module Responsibilities
 
+### `src/lib/readme-parser.ts`
+Pure-function frontmatter parser. Extracts `description` from README.md YAML frontmatter and body content. `README.md` files are never passed to `BamlRuntime.fromFiles()` — only `.baml` files are compiled.
+
+```typescript
+function parseReadmeDescription(content: string): string | undefined;
+function parseReadmeBody(content: string): string | undefined;
+```
+
+### `src/lib/type-parser.ts`
+Extracts class and enum type definitions from BAML source as raw strings. Used by `describeGroup()` to surface type signatures in detailed group responses.
+
+```typescript
+function parseTypeDefinitions(source: string): string[];
+```
+
+### `src/lib/system-prompt.ts`
+Renders the `<available_baml_functions>` XML block for system prompt injection. Returns `null` when the registry is empty or all groups are `skill:` prefixed.
+
+```typescript
+function renderBamlSystemPrompt(registry: FunctionsRegistry): string | null;
+```
+
 ### `src/lib/types.ts`
 All shared TypeScript types. No logic. Exported for consumers who want type safety.
 
@@ -178,8 +200,10 @@ function parseFunctionDeclarations(source: string): ParsedFunction[];
 // Registry created from pre-loaded directory contents
 class FunctionsRegistry {
   static fromGroups(groups: Record<string, Record<string, string>>): FunctionsRegistry;
-  resolve(name: string): FunctionEntry;    // short name or "group/name"
+  resolve(name: string): FunctionEntry;
   list(group?: string): FunctionInfo[];
+  listGroups(): GroupInfo[];                              // group index with descriptions
+  describeGroup(name: string): GroupDetail | undefined;  // full detail: functions, types, readme
   get isEmpty(): boolean;
 }
 ```
@@ -211,6 +235,11 @@ function createBamlListTool(registry: FunctionsRegistry): ToolDefinition;
 {
   group: { type: "string", description: "Filter by group name (optional)" }
 }
+```
+
+Two response shapes:
+- **No `group` filter** — returns `GroupInfo[]`: compact index with name, file count, function count, description.
+- **With `group` filter** — returns `GroupDetail`: full detail with function signatures, type definitions, and README body.
 ```
 
 ### `src/tools/baml-run.ts`
@@ -266,7 +295,8 @@ Factory phase (synchronous):
 4. Emit `"pi-baml:ready"` with library
 5. Register all three tools
 
-No lifecycle handlers — the extension is fully initialized after factory.
+Lifecycle handler:
+- `before_agent_start` — renders `<available_baml_functions>` block via `renderBamlSystemPrompt()` and appends it to the system prompt. Skipped when `baml.systemPrompt: false` or registry is empty.
 
 ## Model Resolution
 

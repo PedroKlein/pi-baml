@@ -3,75 +3,90 @@ import { createBamlListTool } from "../../src/tools/baml-list.js";
 import { FunctionsRegistry } from "../../src/lib/registry.js";
 import type { ToolResult } from "../../src/tools/types.js";
 
-/** Extract text content from a ToolResult for assertions. */
 function textOf(result: ToolResult): string {
   return result.content.map((c) => c.text).join("");
 }
 
 describe("baml_list tool", () => {
-  it("returns all functions formatted for agent", async () => {
-    const registry = FunctionsRegistry.fromGroups({
-      extraction: {
-        "main.baml": `function ExtractItems(text: string) -> Item[] {
-          client PiClient
-          prompt #"..."#
-        }`,
-      },
-      classification: {
-        "main.baml": `function ClassifyIntent(text: string) -> Intent {
-          client PiClient
-          prompt #"..."#
-        }`,
-      },
+  describe("unfiltered (no group param)", () => {
+    it("returns compact groups index", async () => {
+      const registry = FunctionsRegistry.fromGroups({
+        extraction: {
+          "main.baml": `function ExtractItems(text: string) -> Item[] { client PiClient prompt #"..."# }`,
+          "README.md": "---\ndescription: Extract structured items\n---",
+        },
+        classification: {
+          "main.baml": `function ClassifyIntent(text: string) -> Intent { client PiClient prompt #"..."# }`,
+        },
+      });
+
+      const tool = createBamlListTool(registry);
+      const result = await tool.execute({});
+      const parsed = JSON.parse(textOf(result));
+
+      expect(parsed.groups).toBeDefined();
+      expect(parsed.groups).toHaveLength(2);
+      // Should be sorted alphabetically
+      expect(parsed.groups[0].name).toBe("classification");
+      expect(parsed.groups[1].name).toBe("extraction");
+      expect(parsed.groups[1].description).toBe("Extract structured items");
+      expect(parsed.groups[1].functions).toEqual(["ExtractItems"]);
+      // No readme or types in compact output
+      expect(parsed.groups[0].readme).toBeUndefined();
     });
-
-    const tool = createBamlListTool(registry);
-    const result = await tool.execute({});
-
-    const parsed = JSON.parse(textOf(result));
-    expect(parsed).toHaveLength(2);
-    expect(parsed.map((f: { name: string }) => f.name).sort()).toEqual([
-      "ClassifyIntent",
-      "ExtractItems",
-    ]);
-    expect(parsed[0]).toHaveProperty("group");
-    expect(parsed[0]).toHaveProperty("qualifiedName");
-    expect(parsed[0]).toHaveProperty("inputTypes");
-    expect(parsed[0]).toHaveProperty("outputType");
   });
 
-  it("filters by group parameter", async () => {
-    const registry = FunctionsRegistry.fromGroups({
-      extraction: {
-        "main.baml": `function ExtractItems(text: string) -> Item[] {
-          client PiClient
-          prompt #"..."#
-        }`,
-      },
-      classification: {
-        "main.baml": `function ClassifyIntent(text: string) -> Intent {
-          client PiClient
-          prompt #"..."#
-        }`,
-      },
+  describe("filtered (group param provided)", () => {
+    it("returns full GroupDetail", async () => {
+      const registry = FunctionsRegistry.fromGroups({
+        extraction: {
+          "types.baml": `class Item { name string }`,
+          "main.baml": `function ExtractItems(text: string) -> Item[] { client PiClient prompt #"..."# }`,
+          "README.md": "---\ndescription: Extract items\n---\n\n# Extraction\n\nDetails here.",
+        },
+      });
+
+      const tool = createBamlListTool(registry);
+      const result = await tool.execute({ group: "extraction" });
+      const parsed = JSON.parse(textOf(result));
+
+      expect(parsed.group).toBe("extraction");
+      expect(parsed.description).toBe("Extract items");
+      expect(parsed.readme).toContain("# Extraction");
+      expect(parsed.types.length).toBeGreaterThan(0);
+      expect(parsed.types[0]).toContain("class Item");
+      expect(parsed.functions).toHaveLength(1);
+      expect(parsed.functions[0].name).toBe("ExtractItems");
+      expect(parsed.functions[0].qualifiedName).toBe("extraction/ExtractItems");
+      expect(parsed.functions[0].inputTypes).toBe("text: string");
+      expect(parsed.functions[0].outputType).toBe("Item[]");
     });
 
-    const tool = createBamlListTool(registry);
-    const result = await tool.execute({ group: "extraction" });
+    it("returns error for nonexistent group", async () => {
+      const registry = FunctionsRegistry.fromGroups({
+        extraction: {
+          "main.baml": `function X(x: string) -> string { client PiClient prompt #""# }`,
+        },
+      });
 
-    const parsed = JSON.parse(textOf(result));
-    expect(parsed).toHaveLength(1);
-    expect(parsed[0].name).toBe("ExtractItems");
+      const tool = createBamlListTool(registry);
+      const result = await tool.execute({ group: "nonexistent" });
+      const parsed = JSON.parse(textOf(result));
+
+      expect(parsed.error).toBeDefined();
+      expect(parsed.error).toContain("nonexistent");
+      expect(parsed.error).toContain("not found");
+    });
   });
 
-  it("returns helpful message when registry is empty", async () => {
-    const registry = FunctionsRegistry.fromGroups({});
+  describe("empty registry", () => {
+    it("returns helpful message", async () => {
+      const registry = FunctionsRegistry.fromGroups({});
+      const tool = createBamlListTool(registry);
+      const result = await tool.execute({});
+      const text = textOf(result);
 
-    const tool = createBamlListTool(registry);
-    const result = await tool.execute({});
-    const text = textOf(result);
-
-    expect(text).toContain("No BAML functions found");
-    expect(text).toContain(".pi/baml/");
+      expect(text).toContain("No BAML functions found");
+    });
   });
 });
