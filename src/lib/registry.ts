@@ -231,6 +231,60 @@ export class FunctionsRegistry {
     };
   }
 
+  /**
+   * Merge additional groups into the registry.
+   *
+   * Only adds groups whose name doesn't already exist — preserves
+   * higher-priority groups that were loaded earlier.
+   * Used for deferred skill-BAML discovery.
+   */
+  mergeGroups(groups: Record<string, Record<string, string>>): void {
+    for (const [group, files] of Object.entries(groups)) {
+      // Skip groups already present (higher-priority source won)
+      const alreadyHasGroup = [...this.entries.values()].some(
+        (entry) => entry.group === group,
+      );
+      if (alreadyHasGroup) continue;
+
+      const readmeContent = files["README.md"];
+      const { "README.md": _, ...bamlFiles } = files;
+      const description = readmeContent
+        ? parseReadmeDescription(readmeContent)
+        : undefined;
+
+      if (description !== undefined) {
+        this.groupDescriptions.set(group, description);
+      }
+      if (readmeContent !== undefined) {
+        this.groupReadmes.set(group, readmeContent);
+      }
+
+      const allFunctions: ParsedFunction[] = [];
+      for (const source of Object.values(bamlFiles)) {
+        allFunctions.push(...parseFunctionDeclarations(source));
+      }
+
+      for (const fn of allFunctions) {
+        const qualifiedName = `${group}/${fn.name}`;
+
+        const entry: FunctionEntry = {
+          name: fn.name,
+          group,
+          files: bamlFiles,
+          inputTypes: fn.inputTypes,
+          outputType: fn.outputType,
+          ...(description !== undefined && { description }),
+        };
+
+        this.entries.set(qualifiedName, entry);
+
+        const existing = this.shortNameIndex.get(fn.name) ?? [];
+        existing.push(qualifiedName);
+        this.shortNameIndex.set(fn.name, existing);
+      }
+    }
+  }
+
   /** Check if the registry has any functions. */
   get isEmpty(): boolean {
     return this.entries.size === 0;

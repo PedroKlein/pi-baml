@@ -86,12 +86,12 @@ describe("pi-baml extension factory", () => {
     expect(events).not.toContain("session_start");
   });
 
-  it("does not register before_agent_start when registry is empty", () => {
-    // discoverBamlGroups is mocked to return {} — registry will be empty
+  it("always registers before_agent_start for lazy skill discovery", () => {
+    // Even with empty registry, before_agent_start is needed for skill discovery
     const pi = createMockPi();
     createPiBamlExtension(pi, { settings: testSettings });
     const events = pi.on.mock.calls.map((c: unknown[]) => (c[0] as string));
-    expect(events).not.toContain("before_agent_start");
+    expect(events).toContain("before_agent_start");
   });
 
   it("registers before_agent_start when registry has discoverable groups", () => {
@@ -106,7 +106,7 @@ describe("pi-baml extension factory", () => {
     expect(events).toContain("before_agent_start");
   });
 
-  it("does not register before_agent_start when systemPrompt is false", () => {
+  it("before_agent_start does not inject system prompt when systemPrompt is false", () => {
     vi.mocked(discoverBamlGroups).mockReturnValueOnce({
       "extract-todos": {
         "main.baml": `function ExtractTodos(notes: string) -> string { client PiClient prompt #""# }`,
@@ -116,8 +116,9 @@ describe("pi-baml extension factory", () => {
     createPiBamlExtension(pi, {
       settings: { ...testSettings, baml: { ...testSettings.baml, systemPrompt: false } },
     });
+    // Handler is still registered (for skill discovery) but won't inject prompt
     const events = pi.on.mock.calls.map((c: unknown[]) => (c[0] as string));
-    expect(events).not.toContain("before_agent_start");
+    expect(events).toContain("before_agent_start");
   });
 
   it("emits available=false when settings are invalid", () => {

@@ -357,3 +357,66 @@ describe("describeGroup", () => {
     expect(detail!.types.length).toBeGreaterThan(0);
   });
 });
+
+describe("mergeGroups", () => {
+  it("adds new groups to an existing registry", () => {
+    const registry = FunctionsRegistry.fromGroups({
+      existing: {
+        "main.baml": `function ExistingFunc(x: string) -> string { client PiClient prompt #""# }`,
+      },
+    });
+
+    registry.mergeGroups({
+      "skill:diagnose": {
+        "main.baml": `function ClassifyBug(desc: string) -> string { client PiClient prompt #""# }`,
+      },
+    });
+
+    expect(registry.list()).toHaveLength(2);
+    expect(registry.resolve("ClassifyBug").group).toBe("skill:diagnose");
+  });
+
+  it("does not override existing groups with the same name", () => {
+    const registry = FunctionsRegistry.fromGroups({
+      "skill:diagnose": {
+        "main.baml": `function Original(x: string) -> string { client PiClient prompt #""# }`,
+      },
+    });
+
+    registry.mergeGroups({
+      "skill:diagnose": {
+        "main.baml": `function Replacement(x: string) -> string { client PiClient prompt #""# }`,
+      },
+    });
+
+    // Original stays, Replacement is NOT added
+    expect(registry.list()).toHaveLength(1);
+    expect(registry.list()[0]!.name).toBe("Original");
+  });
+
+  it("registers description from README.md in merged group", () => {
+    const registry = FunctionsRegistry.fromGroups({});
+
+    registry.mergeGroups({
+      "skill:extract": {
+        "main.baml": `function Extract(x: string) -> string { client PiClient prompt #""# }`,
+        "README.md": "---\ndescription: Extract structured data\n---\n\nBody text.",
+      },
+    });
+
+    const groups = registry.listGroups();
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.description).toBe("Extract structured data");
+  });
+
+  it("handles empty merge gracefully", () => {
+    const registry = FunctionsRegistry.fromGroups({
+      existing: {
+        "main.baml": `function Func(x: string) -> string { client PiClient prompt #""# }`,
+      },
+    });
+
+    registry.mergeGroups({});
+    expect(registry.list()).toHaveLength(1);
+  });
+});

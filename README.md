@@ -59,11 +59,11 @@ See [docs/configuration.md](docs/configuration.md) for the full reference, inclu
 
 ## Function discovery
 
-Groups are discovered at startup from these directories (lowest to highest priority):
+Groups are discovered from these directories (lowest to highest priority):
 
 | Priority | Path | Notes |
 |----------|------|-------|
-| 1 (lowest) | `~/.agents/skills/*/baml/` | Skill-colocated, prefixed `skill:` |
+| 1 (lowest) | Pi's resolved skill paths | Skill-colocated, prefixed `skill:`, discovered lazily |
 | 2 | `~/.agents/baml/<group>/` | Shared across agents |
 | 3 | `~/.pi/baml/<group>/` | User Pi-local |
 | 4 | `[functionsDirs]` | From settings |
@@ -71,6 +71,8 @@ Groups are discovered at startup from these directories (lowest to highest prior
 | 6 (highest) | `<cwd>/.agents/baml/<group>/` | Project-specific |
 
 Higher priority wins when names collide. Each subdirectory is one compilation unit.
+
+Skill-colocated BAML is discovered lazily on the first agent turn using Pi's resolved skill paths — this automatically works with any profile, including custom `--skill` flags and npm-packaged skills.
 
 ### System prompt injection
 
@@ -154,8 +156,9 @@ Two rules:
 
 ## Skill integration
 
-Skills can bundle their own `.baml` files for deterministic processing. Place them in a `baml/` subdirectory within the skill:
+Skills can bundle their own `.baml` files for deterministic processing. Two layouts are supported:
 
+**Dedicated subdirectory** (preferred for multiple files):
 ```
 skills/
   my-skill/
@@ -165,7 +168,17 @@ skills/
       README.md
 ```
 
-These register with a `skill:` prefix (e.g. `skill:my-skill`) and are callable via `baml_run("skill:my-skill/ClassifyInput", {...})`. They compile at startup but are excluded from the system prompt. The skill's own SKILL.md documents when and how to call them.
+**Flat layout** (convenient for single-file schemas):
+```
+skills/
+  my-skill/
+    SKILL.md
+    schema.baml
+```
+
+If both a `baml/` subdirectory and flat `.baml` files exist, the subdirectory takes precedence.
+
+These register with a `skill:` prefix (e.g. `skill:my-skill`) and are callable via `baml_run("skill:my-skill/ClassifyInput", {...})`. They are discovered lazily on the first agent turn using Pi's resolved skill paths — automatically working with any profile configuration. They are excluded from the system prompt. The skill's own SKILL.md documents when and how to call them.
 
 This keeps skill-specific BAML self-contained alongside the skill that uses it, rather than polluting the global function namespace.
 

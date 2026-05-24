@@ -128,18 +128,23 @@ export default function(pi: ExtensionAPI) {
 
 ### Discovery Priority
 
-Functions are discovered at factory time from these directories (lowest → highest priority):
+Functions are discovered from these directories (lowest → highest priority):
 
 | Priority | Path | Group prefix |
 |----------|------|--------------|
-| 1 (lowest) | `~/.agents/skills/*/baml/` | `skill:` |
+| 1 (lowest) | Pi's resolved skill paths (lazy) | `skill:` |
 | 2 | `~/.agents/baml/<group>/` | none |
 | 3 | `~/.pi/baml/<group>/` | none |
 | 4 | `[settings.functionsDirs]` | none |
 | 5 | `<cwd>/.pi/baml/<group>/` | none |
 | 6 (highest) | `<cwd>/.agents/baml/<group>/` | none |
 
-`skill:` groups compile at startup and are available for `baml_run` but are excluded from the system prompt injection.
+`skill:` groups are discovered lazily on the first agent turn (via `before_agent_start`) using Pi's fully resolved skill paths — automatically includes profile-specific directories, npm-packaged skills, and explicit `--skill` flags. Two layouts are supported per skill:
+
+1. `<skill>/baml/*.baml` — dedicated subdirectory (preferred)
+2. `<skill>/*.baml` — flat files alongside SKILL.md
+
+`skill:` groups are available for `baml_run` but excluded from the system prompt injection.
 
 ### System Prompt Injection
 
@@ -200,7 +205,7 @@ npm run test:integration  # real BAML compilation
 7. **No `openai-responses` models** — BAML 0.85.0 lacks this provider. Throws explicit error.
 8. **Copilot auth is provider-aware** — `anthropic` needs Bearer in headers; `openai-generic` uses `api_key` natively (see ADR-013).
 9. **Enriched tool output** — `baml_run`/`baml_exec` return `{ result, model, tier }` envelope. The render layer unwraps this for display and shows model/tier in the footer.
-10. **Discovery runs at factory time** — `discoverBamlGroups(cwd, functionsDirs)` scans all discovery paths and populates the registry immediately.
+10. **Discovery runs in two phases** — `discoverBamlGroups(cwd, functionsDirs, [])` scans standard dirs at factory time; skill-colocated BAML is discovered lazily on first `before_agent_start` using Pi's resolved skill paths.
 11. **ModelRegistry is explicit** — library methods require `modelRegistry` as a parameter. No internal state, no session_start handler, no lifecycle coupling (see ADR-007).
 12. **`skill:` prefix for skill-colocated BAML** — literal in registry key. Qualified names: `skill:diagnose/ClassifyBugPhase`.
 13. **System prompt excludes skill groups** — only non-`skill:` groups appear in `<available_baml_functions>`.

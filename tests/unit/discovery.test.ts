@@ -157,13 +157,35 @@ describe("scanSkillDirectories", () => {
     expect(result["skill:diagnose"]!["main.baml"]).toContain("Diagnose");
   });
 
-  it("skips skills without baml/ subdirectory", () => {
+  it("skips skills without any .baml files (no baml/ subdir, no flat files)", () => {
     mkdirSync(join(skillsRoot, "some-skill"), { recursive: true });
-    // No baml/ subdir
+    writeFileSync(join(skillsRoot, "some-skill", "SKILL.md"), "# Some skill");
 
     const result = scanSkillDirectories(skillsRoot);
     expect(result["skill:some-skill"]).toBeUndefined();
     expect(Object.keys(result)).toHaveLength(0);
+  });
+
+  it("discovers .baml files colocated directly in skill root (flat layout)", () => {
+    mkdirSync(join(skillsRoot, "literature-notes"), { recursive: true });
+    writeFileSync(join(skillsRoot, "literature-notes", "SKILL.md"), "# Literature Notes");
+    writeFileSync(join(skillsRoot, "literature-notes", "schema.baml"), `function Synthesize(text: string) -> string { client PiClient prompt #""# }`);
+
+    const result = scanSkillDirectories(skillsRoot);
+    expect(result["skill:literature-notes"]).toBeDefined();
+    expect(result["skill:literature-notes"]!["schema.baml"]).toContain("Synthesize");
+  });
+
+  it("prefers baml/ subdirectory over flat .baml files when both exist", () => {
+    const skillDir = join(skillsRoot, "diagnose");
+    mkdirSync(join(skillDir, "baml"), { recursive: true });
+    writeFileSync(join(skillDir, "baml", "main.baml"), `function FromSubdir(x: string) -> string { client PiClient prompt #""# }`);
+    writeFileSync(join(skillDir, "flat.baml"), `function FromFlat(x: string) -> string { client PiClient prompt #""# }`);
+
+    const result = scanSkillDirectories(skillsRoot);
+    const files = result["skill:diagnose"]!;
+    expect(files["main.baml"]).toContain("FromSubdir");
+    expect(files["flat.baml"]).toBeUndefined();
   });
 
   it("reads README.md from skill baml directory", () => {

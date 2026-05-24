@@ -82,12 +82,14 @@ Custom providers defined in `~/.pi/agent/models.json` work natively as long as t
 Additional directories to scan for `.baml` function files. Added to the default discovery paths.
 
 Default discovery (always active, lowest → highest priority):
-1. `~/.agents/skills/*/baml/` — skill-colocated (`skill:` prefix, lowest priority)
+1. Pi's resolved skill paths — skill-colocated (`skill:` prefix, discovered lazily via `before_agent_start`)
 2. `~/.agents/baml/` — shared across agents
 3. `~/.pi/baml/` — user Pi-local
 4. `[functionsDirs]` — extra dirs from config (this setting)
 5. `<cwd>/.pi/baml/` — project Pi-local
 6. `<cwd>/.agents/baml/` — project-specific (highest priority)
+
+Skill-colocated BAML supports two layouts: `<skill>/baml/*.baml` (dedicated subdirectory) or `<skill>/*.baml` (flat files alongside SKILL.md). Discovery automatically follows Pi's resolved skill paths, including profile-specific directories and `--skill` flags.
 
 ### `systemPrompt` (optional)
 

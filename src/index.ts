@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { parseBamlSettings } from "./lib/config.js";
 import { FunctionsRegistry } from "./lib/registry.js";
-import { discoverBamlGroups } from "./lib/discovery.js";
+import { discoverBamlGroups, scanSkillDirectories } from "./lib/discovery.js";
 import { createPiBamlLibrary, type PiBamlLibraryInternal } from "./eventbus.js";
 import { createBamlListTool } from "./tools/baml-list.js";
 import { createBamlRunTool } from "./tools/baml-run.js";
@@ -117,23 +117,43 @@ export function createPiBamlExtension(
     settings,
   });
 
-  // Discover functions
+  // Discover functions (skip skill dirs — those are discovered lazily from before_agent_start)
   const cwd = options?.cwd ?? process.cwd();
-  const discoveredGroups = discoverBamlGroups(cwd, settings.functionsDirs);
+  const discoveredGroups = discoverBamlGroups(cwd, settings.functionsDirs, []);
   const registry = FunctionsRegistry.fromGroups(discoveredGroups);
   lib.setRegistry(registry);
 
   // Emit on EventBus
   pi.events.emit("pi-baml:ready", lib);
 
-  // System prompt injection — computed once, handler appends the cached block
+  // System prompt injection — computed once, handler appends the cached block.
+  // Also performs one-time lazy skill-BAML discovery from Pi's resolved skill paths.
   const systemPromptBlock = settings.systemPrompt !== false ? renderBamlSystemPrompt(registry) : null;
-  if (systemPromptBlock !== null) {
-    pi.on("before_agent_start", async (...args: unknown[]) => {
-      const event = args[0] as { systemPrompt?: string };
+  let skillsDiscovered = false;
+
+  pi.on("before_agent_start", async (...args: unknown[]) => {
+    const event = args[0] as {
+      systemPrompt?: string;
+      systemPromptOptions?: { skills?: Array<{ baseDir: string; name: string }> };
+    };
+
+    // One-time lazy skill-BAML discovery from Pi's resolved skill paths
+    if (!skillsDiscovered) {
+      skillsDiscovered = true;
+      const skills = event?.systemPromptOptions?.skills;
+      if (skills?.length) {
+        const skillDirs = deriveSkillDirs(skills);
+        for (const dir of skillDirs) {
+          const groups = scanSkillDirectories(dir);
+          registry.mergeGroups(groups);
+        }
+      }
+    }
+
+    if (systemPromptBlock !== null) {
       return { systemPrompt: (event?.systemPrompt ?? "") + "\n\n" + systemPromptBlock };
-    });
-  }
+    }
+  });
 
   // Executor factory
   function toolExecutorFactory(input: {
@@ -249,6 +269,23 @@ export function createPiBamlExtension(
     },
   });
 
+}
+
+/**
+ * Derive unique parent directories from Pi's resolved skill paths.
+ *
+ * Each skill's baseDir is like `/path/to/skills/diagnose`.
+ * We want the parent (`/path/to/skills/`) so we can scan for
+ * sibling skills that may have `baml/` subdirectories.
+ */
+function deriveSkillDirs(skills: Array<{ baseDir: string }>): string[] {
+  const dirs = new Set<string>();
+  for (const skill of skills) {
+    if (skill.baseDir) {
+      dirs.add(dirname(skill.baseDir));
+    }
+  }
+  return [...dirs];
 }
 
 export default createPiBamlExtension;

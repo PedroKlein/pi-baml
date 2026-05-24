@@ -97,12 +97,12 @@ function scanDirectory(root: string): DiscoveredGroups {
 /**
  * Scan skill directories for BAML groups.
  *
- * Each `<skillsDir>/<skill-name>/baml/` directory becomes a group with
- * a `skill:` prefix (e.g. `skill:diagnose`).
+ * Scans two locations per skill (first match wins):
+ * 1. `<skillsDir>/<skill-name>/baml/` — dedicated baml subdirectory
+ * 2. `<skillsDir>/<skill-name>/*.baml` — .baml files colocated with SKILL.md
  *
- * Skills without a `baml/` subdirectory are silently skipped.
- * The baml/ directory is scanned flat — .baml files live directly inside it,
- * not in further subdirectories.
+ * Each discovered skill becomes a group with a `skill:` prefix (e.g. `skill:diagnose`).
+ * Skills without any .baml files are silently skipped.
  */
 export function scanSkillDirectories(skillsDir: string): DiscoveredGroups {
   const groups: DiscoveredGroups = {};
@@ -127,48 +127,91 @@ export function scanSkillDirectories(skillsDir: string): DiscoveredGroups {
     }
     if (!skillStat.isDirectory()) continue;
 
-    const bamlPath = join(skillPath, "baml");
-    let bamlStat;
-    try {
-      bamlStat = statSync(bamlPath);
-    } catch {
-      // No baml/ subdir — skip silently
-      continue;
-    }
-    if (!bamlStat.isDirectory()) continue;
+    // Strategy 1: Check for dedicated baml/ subdirectory
+    const files = scanBamlSubdir(join(skillPath, "baml"))
+      // Strategy 2: Check for .baml files directly in skill root
+      ?? scanBamlFlat(skillPath);
 
-    // Read files directly from baml/ (flat — not recursive into subdirs)
-    let bamlEntries: string[];
-    try {
-      bamlEntries = readdirSync(bamlPath);
-    } catch {
-      continue;
-    }
-
-    const files: Record<string, string> = {};
-    let hasBamlFile = false;
-    for (const file of bamlEntries) {
-      const isBAML = file.endsWith(".baml");
-      const isReadme = file === "README.md";
-      if (!isBAML && !isReadme) continue;
-
-      const filePath = join(bamlPath, file);
-      try {
-        const fileStat = statSync(filePath);
-        if (!fileStat.isFile()) continue;
-        files[file] = readFileSync(filePath, "utf-8");
-        if (isBAML) hasBamlFile = true;
-      } catch {
-        continue;
-      }
-    }
-
-    if (hasBamlFile) {
+    if (files) {
       groups[`skill:${entry}`] = files;
     }
   }
 
   return groups;
+}
+
+/**
+ * Scan a dedicated baml/ subdirectory for .baml files.
+ * Returns files map if any .baml files found, null otherwise.
+ */
+function scanBamlSubdir(bamlPath: string): Record<string, string> | null {
+  let bamlStat;
+  try {
+    bamlStat = statSync(bamlPath);
+  } catch {
+    return null;
+  }
+  if (!bamlStat.isDirectory()) return null;
+
+  let bamlEntries: string[];
+  try {
+    bamlEntries = readdirSync(bamlPath);
+  } catch {
+    return null;
+  }
+
+  const files: Record<string, string> = {};
+  let hasBamlFile = false;
+  for (const file of bamlEntries) {
+    const isBAML = file.endsWith(".baml");
+    const isReadme = file === "README.md";
+    if (!isBAML && !isReadme) continue;
+
+    const filePath = join(bamlPath, file);
+    try {
+      const fileStat = statSync(filePath);
+      if (!fileStat.isFile()) continue;
+      files[file] = readFileSync(filePath, "utf-8");
+      if (isBAML) hasBamlFile = true;
+    } catch {
+      continue;
+    }
+  }
+
+  return hasBamlFile ? files : null;
+}
+
+/**
+ * Scan a skill root directory for .baml files colocated with SKILL.md.
+ * Returns files map if any .baml files found, null otherwise.
+ */
+function scanBamlFlat(skillPath: string): Record<string, string> | null {
+  let skillEntries: string[];
+  try {
+    skillEntries = readdirSync(skillPath);
+  } catch {
+    return null;
+  }
+
+  const files: Record<string, string> = {};
+  let hasBamlFile = false;
+  for (const file of skillEntries) {
+    const isBAML = file.endsWith(".baml");
+    const isReadme = file === "README.md";
+    if (!isBAML && !isReadme) continue;
+
+    const filePath = join(skillPath, file);
+    try {
+      const fileStat = statSync(filePath);
+      if (!fileStat.isFile()) continue;
+      files[file] = readFileSync(filePath, "utf-8");
+      if (isBAML) hasBamlFile = true;
+    } catch {
+      continue;
+    }
+  }
+
+  return hasBamlFile ? files : null;
 }
 
 /**
